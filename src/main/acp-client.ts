@@ -10,6 +10,11 @@ import type { PlanApprovalRequest } from "../shared/plan-approval.js";
 import type { UserQuestionRequest } from "../shared/user-questions.js";
 import { preserveJsonRpcId } from "../shared/types.js";
 import type { PermissionRequest, StreamItem } from "../shared/types.js";
+import {
+  formatGrokNotFoundError,
+  pathWithGrokBin,
+  resolveGrokBinary,
+} from "../shared/grok-binary.js";
 
 export type RewindPoint = {
   prompt_index: number;
@@ -85,7 +90,8 @@ export class GrokAcpClient extends EventEmitter {
   constructor(opts: { cwd: string; binary?: string; alwaysApprove?: boolean }) {
     super();
     this.cwd = opts.cwd;
-    this.binary = opts.binary || process.env.GROK_BINARY || "grok";
+    // Packaged apps have a thin PATH — never rely on bare "grok" alone.
+    this.binary = opts.binary || resolveGrokBinary();
     // Env override only — UI Auto mode uses setAlwaysApprove + session/set_mode
     // so leaving Auto does not leave a stuck --always-approve process.
     this.alwaysApprove =
@@ -111,10 +117,16 @@ export class GrokAcpClient extends EventEmitter {
     // hides permission modals after the user leaves Auto mode. Auto is handled
     // via setAlwaysApprove + session/set_mode instead.
     const args = ["agent", "stdio"];
+    // Re-resolve in case CLI was installed after app launch / PATH was thin
+    this.binary = resolveGrokBinary();
+    this.emit("log", `spawning grok agent: ${this.binary}`);
 
     this.proc = spawn(this.binary, args, {
       cwd: this.cwd,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        PATH: pathWithGrokBin(process.env),
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -131,6 +143,11 @@ export class GrokAcpClient extends EventEmitter {
     });
 
     this.proc.on("error", (err) => {
+      const anyErr = err as NodeJS.ErrnoException;
+      if (anyErr.code === "ENOENT") {
+        this.emit("error", new Error(formatGrokNotFoundError(this.binary)));
+        return;
+      }
       this.emit("error", err);
     });
 

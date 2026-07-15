@@ -309,7 +309,8 @@ async function ensureClient(
 
   const client = new GrokAcpClient({
     cwd,
-    binary: process.env.GROK_BINARY || "grok",
+    // resolveGrokBinary inside client — do not pass bare "grok"
+    binary: process.env.GROK_BINARY || undefined,
     // never bake always-approve into the process — use setAlwaysApprove after start
     alwaysApprove: false,
   });
