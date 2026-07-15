@@ -2,7 +2,7 @@
 
 Desktop app for [Grok Build](https://x.ai/cli) — multi-project chats, tools, RTL, same **SuperGrok / X Premium+** login as the CLI.
 
-![Grok Desktop](docs/hero.svg)
+![Grok Desktop](docs/hero.png)
 
 ## Requirements
 
