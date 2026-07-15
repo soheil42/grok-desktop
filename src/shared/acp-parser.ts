@@ -518,6 +518,15 @@ export function coalesceStreamItems(items: StreamItem[]): StreamItem[] {
   const out: StreamItem[] = [];
   for (const item of items) {
     const last = out[out.length - 1];
+    // Drop ACP user_message echo when we already optimistically painted the same text
+    if (
+      last &&
+      last.kind === "user" &&
+      item.kind === "user" &&
+      (last.text || "").trim() === (item.text || "").trim()
+    ) {
+      continue;
+    }
     if (
       last &&
       last.kind === item.kind &&

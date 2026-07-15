@@ -6,7 +6,11 @@ import type { TimelineEntry } from "@shared/stream-timeline";
 import { toolShortLabel } from "@shared/stream-timeline";
 import { parseMessageContent } from "@shared/message-content";
 import { buildToolPreview } from "@shared/tool-preview";
-import { codeRegionProps, proseRegionProps } from "@shared/rtl";
+import {
+  codeRegionProps,
+  detectTextDirection,
+  proseRegionProps,
+} from "@shared/rtl";
 
 type Mode = "clean" | "transparent" | "audit";
 
@@ -42,6 +46,11 @@ function Md({ children }: { children: string }) {
             <pre className="md-pre ltr-isolate code-font" dir="ltr">
               {c}
             </pre>
+          ),
+          table: ({ children: c }) => (
+            <div className="md-table-wrap ltr-isolate" dir="ltr">
+              <table>{c}</table>
+            </div>
           ),
         }}
       >
@@ -488,12 +497,22 @@ export function StreamItemView({
       return null;
     }
 
+    const dir = detectTextDirection(parsed.text || "");
+    const dirClass = dir === "rtl" ? "is-rtl" : dir === "ltr" ? "is-ltr" : "is-auto";
+
     return (
-      <div className={`msg msg-user ${anim}`.trim()} data-kind="user">
+      <div
+        className={`msg msg-user ${dirClass} ${anim}`.trim()}
+        data-kind="user"
+        data-dir={dir}
+      >
         <div className="msg-label">You</div>
         {uniqueImages.length > 0 && <ImageGallery images={uniqueImages} />}
         {parsed.text.trim() ? (
-          <div className="msg-bubble user">
+          <div
+            className="msg-bubble user"
+            dir={dir === "auto" ? undefined : dir}
+          >
             <Md>{parsed.text}</Md>
           </div>
         ) : null}
@@ -502,13 +521,23 @@ export function StreamItemView({
   }
 
   if (item.kind === "agent_text") {
+    const text = item.text || "";
+    const dir = detectTextDirection(text);
+    const dirClass = dir === "rtl" ? "is-rtl" : dir === "ltr" ? "is-ltr" : "is-auto";
     return (
-      <div className={`msg msg-agent ${anim}`.trim()} data-kind="agent_text">
+      <div
+        className={`msg msg-agent ${dirClass} ${anim}`.trim()}
+        data-kind="agent_text"
+        data-dir={dir}
+      >
         <div className="msg-label">
           <span className="grok-dot" /> Grok
         </div>
-        <div className="msg-bubble agent">
-          <Md>{item.text || ""}</Md>
+        <div
+          className="msg-bubble agent"
+          dir={dir === "auto" ? undefined : dir}
+        >
+          <Md>{text}</Md>
         </div>
       </div>
     );

@@ -36,6 +36,9 @@
     "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono",
     "Menlo", "Consolas", ui-monospace, monospace;
   --sidebar-width: 268px;
+  /* Chat column: messages + composer share this width, centered via side padding */
+  --chat-max-width: 54rem; /* ~864px — raise/lower to widen/narrow the chat */
+  --chat-side-pad: 1.25rem; /* min horizontal padding when the panel is narrow */
   --glass: blur(40px) saturate(180%);
   --shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
 }
@@ -485,6 +488,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  /* Full-width header — not constrained by chat column max-width */
   padding: 0.65rem 1.35rem;
   border-bottom: 1px solid var(--border);
   background: rgba(5, 5, 5, 0.5);
@@ -511,28 +515,48 @@ button:disabled {
   align-items: center;
 }
 
+/*
+ * Chat column layout
+ *
+ * Side padding = max(min-pad, leftover space / 2) so the entire stream
+ * (all requests + responses + tools) lives in one max-width section with
+ * equal left/right gutters. No per-message max-width centering needed.
+ */
 .stream {
   overflow: auto;
-  padding: 1.5rem 1.75rem 1.25rem;
+  padding: 1.5rem max(var(--chat-side-pad), calc((100% - var(--chat-max-width)) / 2)) 1.25rem;
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 0.85rem;
   scroll-behavior: auto;
+}
+
+.stream > * {
+  width: 100%;
+  min-width: 0;
 }
 
 .stream-batch {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
   gap: 0.85rem;
+  width: 100%;
 }
 
 .hist-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
   content-visibility: auto;
   contain-intrinsic-size: auto 44px;
 }
 
 .load-earlier {
   align-self: center;
+  width: auto;
   border-radius: var(--radius-pill);
   font-size: 12px;
   color: var(--text-muted);
@@ -545,6 +569,7 @@ button:disabled {
   margin: 14vh auto;
   text-align: center;
   color: var(--text-muted);
+  width: 100%;
 }
 
 .loading-spinner {
@@ -578,10 +603,69 @@ button:disabled {
   }
 }
 
-/* Messages */
+/* Messages
+ *
+ * Live inside the padded chat column (.stream). Floating uses physical
+ * right edge (margin-left: auto) so RTL dir on the bubble does not flip
+ * placement to the left.
+ */
 .msg {
-  max-width: 46rem;
+  max-width: 100%;
   width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* User bubbles always on the right within the chat column */
+.msg-user {
+  align-self: flex-end;
+  margin-left: auto;
+  width: auto;
+  max-width: min(85%, 100%);
+}
+.msg-user .msg-label {
+  justify-content: flex-end;
+  text-align: right;
+  width: 100%;
+}
+.msg-user .msg-bubble {
+  width: fit-content;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+/* Agent default: full width of chat column */
+.msg-agent {
+  align-self: stretch;
+  max-width: 100%;
+}
+
+/* Persian / RTL agent replies: whole block on the right */
+.msg-agent.is-rtl {
+  align-self: flex-end;
+  margin-left: auto;
+  width: auto;
+  max-width: min(92%, 100%);
+}
+.msg-agent.is-rtl .msg-label {
+  justify-content: flex-end;
+  flex-direction: row-reverse;
+  width: 100%;
+  text-align: right;
+}
+.msg-agent.is-rtl .msg-bubble {
+  text-align: right;
+  direction: rtl;
+  width: 100%;
+}
+.msg-agent.is-rtl .md {
+  text-align: right;
+}
+
+/* User RTL text (bubble already on the right) */
+.msg-user.is-rtl .msg-bubble {
+  text-align: right;
+  direction: rtl;
 }
 
 .msg-label {
@@ -982,19 +1066,39 @@ button:disabled {
 
 .prose-rtl {
   direction: rtl;
-  text-align: start;
+  text-align: right;
   unicode-bidi: plaintext;
 }
 
 .prose-ltr {
   direction: ltr;
-  text-align: start;
+  text-align: left;
   unicode-bidi: plaintext;
 }
 
 .prose-auto {
   unicode-bidi: plaintext;
   text-align: start;
+}
+
+.md-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 0.65rem 0;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.md-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  direction: ltr;
+  text-align: left;
+}
+
+.msg-agent.is-rtl .md-table-wrap {
+  direction: ltr;
+  unicode-bidi: isolate;
 }
 
 .composer-input {
@@ -1146,7 +1250,7 @@ button:disabled {
 .tl-tool-group,
 .tl-thought,
 .tl-plan {
-  max-width: 46rem;
+  max-width: 100%;
 }
 
 .thought-chip {
@@ -1263,13 +1367,14 @@ button:disabled {
 
 /* ── Composer — Codex-style card ───────────────────────────── */
 .composer {
-  padding: 0.65rem 1.25rem 0.9rem;
+  /* Same side gutters as .stream so the card lines up with messages */
+  padding: 0.65rem max(var(--chat-side-pad), calc((100% - var(--chat-max-width)) / 2)) 0.9rem;
   background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.55) 30%);
 }
 
 .composer-card {
-  max-width: 52rem;
-  margin: 0 auto;
+  width: 100%;
+  margin: 0;
   border-radius: 22px;
   border: 1px solid var(--border-strong);
   background: rgba(22, 22, 24, 0.92);
@@ -1402,9 +1507,10 @@ button:disabled {
 
 /* Empty */
 .empty-state {
-  margin: auto;
+  margin-inline: auto;
   text-align: center;
   color: var(--text-secondary);
+  width: auto;
   max-width: 380px;
   padding: 2rem 1rem;
 }

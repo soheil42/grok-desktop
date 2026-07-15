@@ -32,6 +32,12 @@ describe("rtl helpers", () => {
     expect(proseRegionProps("hello").dir).toBe("ltr");
     expect(proseRegionProps("سلام").dir).toBe("rtl");
     expect(proseRegionProps().dir).toBe("auto");
+    // Persian + English tech terms should still be RTL
+    expect(
+      proseRegionProps(
+        "ریویو عمیق کانال AriaBots VPN برای بازار ایران و محصول VLESS",
+      ).dir,
+    ).toBe("rtl");
   });
 
   it("shellDocumentAttrs sets dir and lang hint", () => {

@@ -50,7 +50,8 @@ export function detectTextDirection(text: string): TextDirection | "auto" {
     else if (/[A-Za-z]/.test(ch)) ltr += 1;
   }
   if (rtl === 0 && ltr === 0) return "auto";
-  // Slight bias so short Persian replies (e.g. "سلام") win
+  // Bias RTL so Persian replies with English tech terms (VPN, FAQ, …) still win
+  if (rtl > 0 && rtl >= ltr * 0.35) return "rtl";
   if (rtl >= ltr) return "rtl";
   return "ltr";
 }

@@ -1,6 +1,6 @@
 {
   "name": "grok-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Grok Build Desktop — multi-agent command center for SuperGrok / X Premium+",
   "main": "dist-electron/main/index.js",
   "author": "xAI Community",
