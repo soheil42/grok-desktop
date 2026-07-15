@@ -21,6 +21,7 @@ import {
   permissionToUserQuestions,
   type UserQuestionRequest,
 } from "./user-questions.js";
+import { joinAgentTextChunks } from "./markdown-normalize.js";
 
 let idCounter = 0;
 
@@ -536,9 +537,13 @@ export function coalesceStreamItems(items: StreamItem[]): StreamItem[] {
     ) {
       // Replace object so React always sees a new reference (in-place mutate
       // left markdown stuck until full remount / app reopen).
+      // joinAgentTextChunks avoids gluing ``` fences to the next turn's prose.
       out[out.length - 1] = {
         ...last,
-        text: (last.text || "") + item.text,
+        text:
+          item.kind === "agent_text"
+            ? joinAgentTextChunks(last.text || "", item.text || "")
+            : (last.text || "") + item.text,
         timestamp: item.timestamp,
       };
       continue;

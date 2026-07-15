@@ -6,30 +6,61 @@ import type { TimelineEntry } from "@shared/stream-timeline";
 import { toolShortLabel } from "@shared/stream-timeline";
 import { parseMessageContent } from "@shared/message-content";
 import { buildToolPreview } from "@shared/tool-preview";
-import {
-  codeRegionProps,
-  detectTextDirection,
-  proseRegionProps,
-} from "@shared/rtl";
+import { codeRegionProps, detectTextDirection } from "@shared/rtl";
+import { normalizeMarkdownForRender } from "@shared/markdown-normalize";
 
 type Mode = "clean" | "transparent" | "audit";
 
+/**
+ * Render GFM markdown safely for mixed Persian/English.
+ *
+ * Important: do NOT put dir=rtl + unicode-bidi:plaintext on the markdown root —
+ * that reorders table/code structure into jumbled pipes (see broken RTL tables).
+ * Structure stays neutral; only prose blocks get RTL.
+ */
 function Md({ children }: { children: string }) {
-  const prose = proseRegionProps(children);
   if (!children?.trim()) return null;
-  // unicode-bidi: plaintext helps mixed Persian + inline code render in order
+  const source = normalizeMarkdownForRender(children);
+  const dir = detectTextDirection(source);
+  const isRtl = dir === "rtl";
+
   return (
     <div
-      className={`md ${prose.className}`}
-      dir={prose.dir}
-      lang={prose.lang}
-      style={{ unicodeBidi: "plaintext" }}
+      className={`md ${isRtl ? "md-rtl" : dir === "ltr" ? "md-ltr" : "md-auto"}`}
+      lang={isRtl ? "fa" : undefined}
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          p: ({ children: c }) => (
+            <p className={isRtl ? "md-prose-rtl" : undefined}>{c}</p>
+          ),
+          li: ({ children: c }) => (
+            <li className={isRtl ? "md-prose-rtl" : undefined}>{c}</li>
+          ),
+          h1: ({ children: c }) => (
+            <h1 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h1>
+          ),
+          h2: ({ children: c }) => (
+            <h2 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h2>
+          ),
+          h3: ({ children: c }) => (
+            <h3 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h3>
+          ),
+          h4: ({ children: c }) => (
+            <h4 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h4>
+          ),
+          blockquote: ({ children: c }) => (
+            <blockquote className={isRtl ? "md-prose-rtl" : undefined}>{c}</blockquote>
+          ),
           a: ({ href, children: c }) => (
-            <a href={href} target="_blank" rel="noreferrer" className="ltr-isolate" dir="ltr">
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+              className="ltr-isolate"
+              dir="ltr"
+            >
               {c}
             </a>
           ),
@@ -40,7 +71,6 @@ function Md({ children }: { children: string }) {
                 <code
                   className="md-inline-code code-font ltr-isolate"
                   dir="ltr"
-                  style={{ unicodeBidi: "isolate" }}
                   {...props}
                 >
                   {c}
@@ -65,7 +95,7 @@ function Md({ children }: { children: string }) {
           ),
         }}
       >
-        {children}
+        {source}
       </ReactMarkdown>
     </div>
   );
@@ -577,10 +607,12 @@ export function StreamItemView({
         <div className="msg-label">
           <span className="grok-dot" /> Grok
         </div>
-        <div
-          className="msg-bubble agent"
-          dir={dir === "auto" ? undefined : dir}
-        >
+        {/*
+          Do not set dir=rtl on the bubble wrapper — it reorders markdown
+          structure (tables/code) before/while ReactMarkdown lays out.
+          Md applies RTL only to prose blocks.
+        */}
+        <div className="msg-bubble agent">
           <Md>{text}</Md>
         </div>
       </div>
