@@ -1116,12 +1116,12 @@ button:disabled {
   font-variant-ligatures: contextual;
 }
 
-/* Markdown root stays direction-neutral so GFM tables/fences parse & layout.
-   Only prose blocks flip for Persian. */
+/* Markdown root stays direction-neutral. Only prose blocks flip for Persian. */
 .md-rtl .md-prose-rtl {
   direction: rtl;
   text-align: right;
-  unicode-bidi: plaintext;
+  /* isolate — NOT plaintext (plaintext reorders pipes in failed table lines) */
+  unicode-bidi: isolate;
 }
 
 .md-ltr {
@@ -1136,7 +1136,7 @@ button:disabled {
 .prose-rtl {
   direction: rtl;
   text-align: right;
-  unicode-bidi: plaintext;
+  unicode-bidi: isolate;
 }
 
 .prose-ltr {
@@ -1148,41 +1148,65 @@ button:disabled {
   text-align: start;
 }
 
+/* Explicit HTML tables (from segmentMarkdown) — never depend on GFM for these */
 .md-table-wrap {
   overflow-x: auto;
   max-width: 100%;
-  margin: 0.65rem 0;
-  border-radius: 10px;
+  margin: 0.75rem 0;
+  border-radius: 12px;
   border: 1px solid var(--border);
   direction: ltr !important;
   unicode-bidi: isolate;
   text-align: left;
+  background: rgba(255, 255, 255, 0.02);
 }
 
-.md-table-wrap table {
+.md-table-wrap table,
+.md-table {
   width: 100%;
   border-collapse: collapse;
-  direction: ltr;
+  direction: ltr !important;
   text-align: left;
+  font-size: 13px;
+  margin: 0;
 }
 
 .md-table-wrap th,
-.md-table-wrap td {
+.md-table-wrap td,
+.md-table th,
+.md-table td {
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.65rem;
+  vertical-align: top;
   direction: ltr;
-  unicode-bidi: plaintext;
+  unicode-bidi: isolate;
   text-align: start;
+  line-height: 1.45;
 }
 
-/* RTL agent replies: keep label on the right, body structure LTR-safe */
+.md-table-wrap th,
+.md-table th {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font-weight: 650;
+  font-size: 12px;
+}
+
+.md-table-wrap td .md-prose-rtl,
+.md-table-wrap th .md-prose-rtl,
+.md-table-wrap p {
+  margin: 0;
+}
+
+/* RTL agent replies: structural LTR; prose handles Persian */
 .msg-agent.is-rtl .msg-bubble.agent {
-  direction: ltr; /* structural; prose inside handles RTL */
+  direction: ltr;
   text-align: start;
 }
 
 .msg-agent.is-rtl .md-table-wrap {
   direction: ltr !important;
   unicode-bidi: isolate;
-  margin-inline-start: auto;
 }
 
 .composer-input {

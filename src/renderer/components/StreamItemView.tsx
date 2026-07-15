@@ -7,96 +7,174 @@ import { toolShortLabel } from "@shared/stream-timeline";
 import { parseMessageContent } from "@shared/message-content";
 import { buildToolPreview } from "@shared/tool-preview";
 import { codeRegionProps, detectTextDirection } from "@shared/rtl";
-import { normalizeMarkdownForRender } from "@shared/markdown-normalize";
+import {
+  segmentMarkdown,
+  type MdSegment,
+} from "@shared/markdown-normalize";
 
 type Mode = "clean" | "transparent" | "audit";
 
+const mdComponents = (isRtl: boolean) => ({
+  p: ({ children: c }: { children?: ReactNode }) => (
+    <p className={isRtl ? "md-prose-rtl" : undefined}>{c}</p>
+  ),
+  li: ({ children: c }: { children?: ReactNode }) => (
+    <li className={isRtl ? "md-prose-rtl" : undefined}>{c}</li>
+  ),
+  h1: ({ children: c }: { children?: ReactNode }) => (
+    <h1 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h1>
+  ),
+  h2: ({ children: c }: { children?: ReactNode }) => (
+    <h2 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h2>
+  ),
+  h3: ({ children: c }: { children?: ReactNode }) => (
+    <h3 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h3>
+  ),
+  h4: ({ children: c }: { children?: ReactNode }) => (
+    <h4 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h4>
+  ),
+  blockquote: ({ children: c }: { children?: ReactNode }) => (
+    <blockquote className={isRtl ? "md-prose-rtl" : undefined}>{c}</blockquote>
+  ),
+  a: ({ href, children: c }: { href?: string; children?: ReactNode }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="ltr-isolate" dir="ltr">
+      {c}
+    </a>
+  ),
+  code: ({
+    className,
+    children: c,
+    ...props
+  }: {
+    className?: string;
+    children?: ReactNode;
+  }) => {
+    const inline = !className;
+    if (inline) {
+      return (
+        <code className="md-inline-code code-font ltr-isolate" dir="ltr" {...props}>
+          {c}
+        </code>
+      );
+    }
+    return (
+      <code className={`${className || ""} code-font`} dir="ltr" {...props}>
+        {c}
+      </code>
+    );
+  },
+  pre: ({ children: c }: { children?: ReactNode }) => (
+    <pre className="md-pre ltr-isolate code-font" dir="ltr">
+      {c}
+    </pre>
+  ),
+  // GFM tables as fallback if any slip through (primary path is segmentMarkdown)
+  table: ({ children: c }: { children?: ReactNode }) => (
+    <div className="md-table-wrap ltr-isolate" dir="ltr">
+      <table>{c}</table>
+    </div>
+  ),
+});
+
+function InlineMd({ text, isRtl }: { text: string; isRtl: boolean }) {
+  if (!text) return null;
+  // Table cells: no block wrappers — keep cell content compact
+  const comps = {
+    ...mdComponents(isRtl),
+    p: ({ children: c }: { children?: ReactNode }) => (
+      <span className={isRtl ? "md-prose-rtl" : undefined}>{c}</span>
+    ),
+  };
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={comps}>
+      {text}
+    </ReactMarkdown>
+  );
+}
+
+function MdTable({
+  segment,
+  isRtl,
+}: {
+  segment: Extract<MdSegment, { type: "table" }>;
+  isRtl: boolean;
+}) {
+  return (
+    <div className="md-table-wrap ltr-isolate" dir="ltr">
+      <table className="md-table">
+        <thead>
+          <tr>
+            {segment.headers.map((h, i) => (
+              <th
+                key={i}
+                style={{
+                  textAlign:
+                    segment.aligns[i] === "center"
+                      ? "center"
+                      : segment.aligns[i] === "right"
+                        ? "right"
+                        : "left",
+                }}
+              >
+                <InlineMd text={h} isRtl={isRtl} />
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {segment.rows.map((row, ri) => (
+            <tr key={ri}>
+              {row.map((cell, ci) => (
+                <td
+                  key={ci}
+                  style={{
+                    textAlign:
+                      segment.aligns[ci] === "center"
+                        ? "center"
+                        : segment.aligns[ci] === "right"
+                          ? "right"
+                          : "left",
+                  }}
+                >
+                  <InlineMd text={cell} isRtl={isRtl} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /**
- * Render GFM markdown safely for mixed Persian/English.
- *
- * Important: do NOT put dir=rtl + unicode-bidi:plaintext on the markdown root —
- * that reorders table/code structure into jumbled pipes (see broken RTL tables).
- * Structure stays neutral; only prose blocks get RTL.
+ * Render markdown safely for mixed Persian/English.
+ * Pipe tables are extracted and rendered as real <table>s so RTL bidi
+ * can never scramble them into raw pipes.
  */
 function Md({ children }: { children: string }) {
   if (!children?.trim()) return null;
-  const source = normalizeMarkdownForRender(children);
-  const dir = detectTextDirection(source);
+  const segments = segmentMarkdown(children);
+  const dir = detectTextDirection(children);
   const isRtl = dir === "rtl";
+  const comps = mdComponents(isRtl);
 
   return (
     <div
       className={`md ${isRtl ? "md-rtl" : dir === "ltr" ? "md-ltr" : "md-auto"}`}
       lang={isRtl ? "fa" : undefined}
     >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          p: ({ children: c }) => (
-            <p className={isRtl ? "md-prose-rtl" : undefined}>{c}</p>
-          ),
-          li: ({ children: c }) => (
-            <li className={isRtl ? "md-prose-rtl" : undefined}>{c}</li>
-          ),
-          h1: ({ children: c }) => (
-            <h1 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h1>
-          ),
-          h2: ({ children: c }) => (
-            <h2 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h2>
-          ),
-          h3: ({ children: c }) => (
-            <h3 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h3>
-          ),
-          h4: ({ children: c }) => (
-            <h4 className={isRtl ? "md-prose-rtl" : undefined}>{c}</h4>
-          ),
-          blockquote: ({ children: c }) => (
-            <blockquote className={isRtl ? "md-prose-rtl" : undefined}>{c}</blockquote>
-          ),
-          a: ({ href, children: c }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noreferrer"
-              className="ltr-isolate"
-              dir="ltr"
-            >
-              {c}
-            </a>
-          ),
-          code: ({ className, children: c, ...props }) => {
-            const inline = !className;
-            if (inline) {
-              return (
-                <code
-                  className="md-inline-code code-font ltr-isolate"
-                  dir="ltr"
-                  {...props}
-                >
-                  {c}
-                </code>
-              );
-            }
-            return (
-              <code className={`${className || ""} code-font`} dir="ltr" {...props}>
-                {c}
-              </code>
-            );
-          },
-          pre: ({ children: c }) => (
-            <pre className="md-pre ltr-isolate code-font" dir="ltr">
-              {c}
-            </pre>
-          ),
-          table: ({ children: c }) => (
-            <div className="md-table-wrap ltr-isolate" dir="ltr">
-              <table>{c}</table>
-            </div>
-          ),
-        }}
-      >
-        {source}
-      </ReactMarkdown>
+      {segments.map((seg, i) => {
+        if (seg.type === "table") {
+          return <MdTable key={`t-${i}`} segment={seg} isRtl={isRtl} />;
+        }
+        if (!seg.text.trim()) return null;
+        return (
+          <ReactMarkdown key={`m-${i}`} remarkPlugins={[remarkGfm]} components={comps}>
+            {seg.text}
+          </ReactMarkdown>
+        );
+      })}
     </div>
   );
 }
