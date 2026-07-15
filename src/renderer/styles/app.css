@@ -550,8 +550,18 @@ button:disabled {
   flex-direction: column;
   align-items: stretch;
   width: 100%;
+  /* content-visibility only on settled history (App sets isHistory for far-up
+     entries). Avoid on live tail — it froze markdown paint until reopen. */
   content-visibility: auto;
-  contain-intrinsic-size: auto 44px;
+  contain-intrinsic-size: auto 80px;
+}
+
+/* Live stream rows (no .hist-item) always paint fully */
+.stream-batch > .msg,
+.stream-batch > .tl-tool,
+.stream-batch > .tl-thought,
+.stream-batch > .tl-plan {
+  content-visibility: visible;
 }
 
 .load-earlier {

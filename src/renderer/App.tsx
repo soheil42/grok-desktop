@@ -80,6 +80,8 @@ export default function App() {
   const streamRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stickBottom = useRef(true);
+  /** Ignore scroll events caused by our own programmatic scrollToBottom. */
+  const programmaticScroll = useRef(false);
 
   const openRewindPicker = async () => {
     setRewindOpen(true);
@@ -200,16 +202,42 @@ export default function App() {
     document.documentElement.lang = attrs.langHint;
   }, [direction]);
 
+  // Content fingerprint so streaming agent_text (same timeline.length) still scrolls
+  const streamContentTick = useMemo(() => {
+    if (!activeThread) return 0;
+    let n = activeThread.items.length;
+    for (const it of activeThread.items) {
+      n += (it.text?.length || 0) + (it.title?.length || 0);
+      if (it.status) n += 1;
+    }
+    return n + (activeThread.isStreaming ? 1_000_000_000 : 0);
+  }, [activeThread]);
+
+  const scrollToBottomIfSticky = () => {
+    const el = streamRef.current;
+    if (!el || !stickBottom.current) return;
+    programmaticScroll.current = true;
+    el.scrollTop = el.scrollHeight;
+    // release on next frame after scroll event
+    requestAnimationFrame(() => {
+      programmaticScroll.current = false;
+    });
+  };
+
   useEffect(() => {
     if (!streamRef.current) return;
     if (activeThread?.isLoadingHistory) return;
     if (!stickBottom.current) return;
-    streamRef.current.scrollTop = streamRef.current.scrollHeight;
+    // Double rAF: wait for markdown/layout paint after React commit
+    requestAnimationFrame(() => {
+      requestAnimationFrame(scrollToBottomIfSticky);
+    });
   }, [
     activeThread?.isLoadingHistory,
     activeThreadId,
     timeline.length,
     activeThread?.isStreaming,
+    streamContentTick,
   ]);
 
   // Global Shift+Tab — cycle Agent → Plan → Auto (Grok CLI parity)
@@ -535,9 +563,11 @@ export default function App() {
             ref={streamRef}
             data-testid="stream-view"
             onScroll={(e) => {
+              if (programmaticScroll.current) return;
               const el = e.currentTarget;
               const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
-              stickBottom.current = dist < 80;
+              // Sticky only when user is near the bottom; scrolling up freezes follow
+              stickBottom.current = dist < 96;
             }}
           >
             {!activeThread && (
@@ -579,15 +609,26 @@ export default function App() {
 
             {!activeThread?.isLoadingHistory && (
               <div className="stream-batch" key={activeThreadId || "none"}>
-                {timeline.map((entry) => (
-                  <TimelineEntryView
-                    key={entry.type === "item" ? entry.item.id : entry.id}
-                    entry={entry}
-                    mode={transparencyMode}
-                    audit={transparencyMode === "audit"}
-                    isHistory
-                  />
-                ))}
+                {timeline.map((entry, idx) => {
+                  // Live tail must NOT use content-visibility (breaks markdown paint
+                  // until reopen). Only freeze far-above-fold history entries.
+                  const fromEnd = timeline.length - 1 - idx;
+                  const isSettledHistory =
+                    !activeThread?.isStreaming && fromEnd > 12;
+                  const entryKey =
+                    entry.type === "item"
+                      ? entry.item.id
+                      : entry.id;
+                  return (
+                    <TimelineEntryView
+                      key={entryKey}
+                      entry={entry}
+                      mode={transparencyMode}
+                      audit={transparencyMode === "audit"}
+                      isHistory={isSettledHistory}
+                    />
+                  );
+                })}
               </div>
             )}
 

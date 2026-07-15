@@ -69,22 +69,70 @@ export function filterVisibleStreamItems(
       continue;
     }
 
-    if (
-      (item.kind === "tool_call" || item.kind === "tool_result") &&
-      !item.title &&
-      !item.toolName &&
-      item.input == null &&
-      item.output == null &&
-      !item.diffs?.length &&
-      !item.text?.trim()
-    ) {
+    if (item.kind === "tool_call" || item.kind === "tool_result") {
+      if (isNoiseToolCall(item)) continue;
+      if (
+        !item.title &&
+        !item.toolName &&
+        item.input == null &&
+        item.output == null &&
+        !item.diffs?.length &&
+        !item.text?.trim()
+      ) {
+        continue;
+      }
+      out.push(item);
       continue;
     }
-    if (hasRenderableContent(item) || item.kind === "tool_call" || item.kind === "tool_result") {
+    if (hasRenderableContent(item)) {
       out.push(item);
     }
   }
   return out;
+}
+
+/**
+ * Tools that add noise vs Grok CLI scrollback — hide unless audit mode.
+ * (CLI shows Creating/Edited with paths; not bare "Tool" / plan spam chips.)
+ */
+export function isNoiseToolCall(item: StreamItem): boolean {
+  const title = (item.title || "").trim();
+  const tool = (item.toolName || "").toLowerCase();
+  const blob = `${title}\n${tool}\n${JSON.stringify(item.input ?? {}).slice(0, 200)}`.toLowerCase();
+
+  // Generic placeholder chip with no path/command
+  if (!title || /^tool$/i.test(title) || /^tool_call/i.test(title)) {
+    const hasPath = /path|target_file|file|command|pattern/i.test(
+      JSON.stringify(item.input ?? {}).slice(0, 400),
+    );
+    if (!hasPath) return true;
+  }
+
+  // Plan / todo stream spam (plan body is already shown as Plan blocks)
+  if (
+    /updating plan|update.?plan|todo_write|create.?plan|enter_plan|exit_plan|plan_mode/i.test(
+      blob,
+    )
+  ) {
+    return true;
+  }
+
+  // ACP internal collapsed titles
+  if (/\|ToolCall\|collapsed/i.test(title)) return true;
+  if (/^session_update|^available_commands/i.test(title)) return true;
+
+  // Bare tool name ids without human title
+  if (
+    /^(read_file|list_dir|write|search_replace|run_terminal_command|grep|todo_write)$/i.test(
+      title,
+    ) &&
+    item.status === "pending"
+  ) {
+    // keep pending shell/read if we have input; else hide early stubs
+    if (item.input == null && !item.text) return true;
+  }
+
+  return false;
 }
 
 function hasRenderableContent(item: StreamItem): boolean {

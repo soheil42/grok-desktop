@@ -17,13 +17,19 @@ type Mode = "clean" | "transparent" | "audit";
 function Md({ children }: { children: string }) {
   const prose = proseRegionProps(children);
   if (!children?.trim()) return null;
+  // unicode-bidi: plaintext helps mixed Persian + inline code render in order
   return (
-    <div className={`md ${prose.className}`} dir={prose.dir} lang={prose.lang}>
+    <div
+      className={`md ${prose.className}`}
+      dir={prose.dir}
+      lang={prose.lang}
+      style={{ unicodeBidi: "plaintext" }}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ href, children: c }) => (
-            <a href={href} target="_blank" rel="noreferrer">
+            <a href={href} target="_blank" rel="noreferrer" className="ltr-isolate" dir="ltr">
               {c}
             </a>
           ),
@@ -31,7 +37,12 @@ function Md({ children }: { children: string }) {
             const inline = !className;
             if (inline) {
               return (
-                <code className="md-inline-code code-font" dir="ltr" {...props}>
+                <code
+                  className="md-inline-code code-font ltr-isolate"
+                  dir="ltr"
+                  style={{ unicodeBidi: "isolate" }}
+                  {...props}
+                >
                   {c}
                 </code>
               );

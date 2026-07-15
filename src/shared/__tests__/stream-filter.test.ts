@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterVisibleStreamItems } from "../stream-filter.js";
+import { filterVisibleStreamItems, isNoiseToolCall } from "../stream-filter.js";
 import type { StreamItem } from "../types.js";
 
 function item(partial: Partial<StreamItem> & Pick<StreamItem, "kind">): StreamItem {
@@ -35,5 +35,35 @@ describe("filterVisibleStreamItems", () => {
       item({ kind: "tool_call", title: "read_file", status: "completed" }),
     ]);
     expect(out).toHaveLength(1);
+  });
+
+  it("drops noise tool chips (Tool / updating plan)", () => {
+    expect(isNoiseToolCall(item({ kind: "tool_call", title: "Tool" }))).toBe(true);
+    expect(
+      isNoiseToolCall(item({ kind: "tool_result", title: "Updating plan" })),
+    ).toBe(true);
+    expect(
+      isNoiseToolCall(
+        item({
+          kind: "tool_result",
+          title: "Edit `index.html`",
+          status: "completed",
+          input: { path: "index.html" },
+        }),
+      ),
+    ).toBe(false);
+
+    const out = filterVisibleStreamItems([
+      item({ kind: "tool_call", title: "Tool" }),
+      item({ kind: "tool_result", title: "Updating plan" }),
+      item({
+        kind: "tool_result",
+        title: "Edit `a.ts`",
+        input: { path: "a.ts" },
+        status: "completed",
+      }),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].title).toMatch(/Edit/);
   });
 });

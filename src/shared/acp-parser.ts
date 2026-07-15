@@ -534,8 +534,13 @@ export function coalesceStreamItems(items: StreamItem[]): StreamItem[] {
       last.text != null &&
       item.text != null
     ) {
-      last.text = (last.text || "") + item.text;
-      last.timestamp = item.timestamp;
+      // Replace object so React always sees a new reference (in-place mutate
+      // left markdown stuck until full remount / app reopen).
+      out[out.length - 1] = {
+        ...last,
+        text: (last.text || "") + item.text,
+        timestamp: item.timestamp,
+      };
       continue;
     }
     // Merge tool_call_update into prior tool_call with same id
@@ -546,13 +551,21 @@ export function coalesceStreamItems(items: StreamItem[]): StreamItem[] {
       (last.kind === "tool_call" || last.kind === "tool_result") &&
       (item.kind === "tool_call" || item.kind === "tool_result")
     ) {
-      last.status = item.status ?? last.status;
-      last.output = item.output ?? last.output;
-      last.diffs = item.diffs ?? last.diffs;
-      last.text = item.text ?? last.text;
-      last.title = item.title ?? last.title;
-      if (item.kind === "tool_result") last.kind = "tool_result";
-      last.raw = item.raw;
+      out[out.length - 1] = {
+        ...last,
+        ...item,
+        id: last.id,
+        kind: item.kind === "tool_result" ? "tool_result" : last.kind,
+        status: item.status ?? last.status,
+        output: item.output ?? last.output,
+        diffs: item.diffs ?? last.diffs,
+        text: item.text ?? last.text,
+        title: item.title ?? last.title,
+        input: item.input ?? last.input,
+        toolName: item.toolName || last.toolName,
+        raw: item.raw ?? last.raw,
+        timestamp: item.timestamp || last.timestamp,
+      };
       continue;
     }
     out.push({ ...item });

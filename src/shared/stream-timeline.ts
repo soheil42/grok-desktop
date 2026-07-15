@@ -98,10 +98,21 @@ export function classifyTool(item: StreamItem): ToolClass {
   ) {
     return "read";
   }
-  if (kind === "edit" || v === "edit" || v === "write" || /search_replace|^write$/i.test(title)) {
+  if (
+    kind === "edit" ||
+    v === "edit" ||
+    v === "write" ||
+    v === "searchreplace" ||
+    /search_replace|^write$|^Creating\s|^Edited\s|^Edit\s|^Write\s/i.test(title)
+  ) {
     return "edit";
   }
-  if (kind === "execute" || v === "bash" || /run_terminal|execute/i.test(title)) {
+  if (
+    kind === "execute" ||
+    v === "bash" ||
+    v === "shell" ||
+    /run_terminal|execute|^Shell\b|^\[bg\]/i.test(title)
+  ) {
     return "execute";
   }
   if (kind === "search" || v === "grep" || v === "search" || title === "grep") {
@@ -110,7 +121,8 @@ export function classifyTool(item: StreamItem): ToolClass {
   if (/web search|web_search/i.test(title) || v === "websearch") {
     return "web";
   }
-  if (/todo/i.test(title) || v === "todowrite") {
+  // Plan/todo updates are filtered as noise; if any remain, treat as todo
+  if (/todo|plan/i.test(title) || v === "todowrite" || v === "plan") {
     return "todo";
   }
 
@@ -172,8 +184,14 @@ export function toolShortLabel(item: StreamItem): string {
   }
 
   if (cls === "edit") {
-    const p = meta.path || title.match(/`([^`]+)`/)?.[1];
-    if (p) return `Edit ${basename(p)}`;
+    const p =
+      meta.path ||
+      title.match(/`([^`]+)`/)?.[1] ||
+      title.match(/(?:Creating|Created|Edit(?:ed|ing)?|Write|Wrote)\s+(\S+)/i)?.[1];
+    if (p) {
+      const isCreate = /creat|write|wrote/i.test(title) && !/edit/i.test(title);
+      return `${isCreate ? "Create" : "Edit"} ${basename(p.replace(/[`'"]/g, ""))}`;
+    }
     return title === "write" ? "Write file" : "Edit file";
   }
 
@@ -318,6 +336,20 @@ export function buildTimeline(items: StreamItem[]): TimelineEntry[] {
           text,
           items: group,
         });
+      }
+      continue;
+    }
+
+    // Keep only the latest plan block in a consecutive run (CLI shows one plan)
+    if (cur.kind === "plan") {
+      let last = cur;
+      i++;
+      while (i < cleaned.length && cleaned[i].kind === "plan") {
+        last = cleaned[i];
+        i++;
+      }
+      if ((last.text || "").trim() || (last.title || "").trim()) {
+        timeline.push({ type: "item", item: last });
       }
       continue;
     }
