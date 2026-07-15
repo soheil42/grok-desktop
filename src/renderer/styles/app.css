@@ -677,10 +677,15 @@ button:disabled {
   unicode-bidi: plaintext;
 }
 
-/* User RTL text (bubble already on the right) */
+/* User RTL: don't flip bubble direction (breaks markdown); prose handles it */
 .msg-user.is-rtl .msg-bubble {
-  text-align: right;
+  text-align: start;
+  direction: ltr;
+}
+.msg-user .msg-bubble.is-rtl-prose .md-prose-rtl {
   direction: rtl;
+  text-align: right;
+  unicode-bidi: plaintext;
 }
 
 .msg-label {

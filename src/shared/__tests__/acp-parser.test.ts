@@ -41,7 +41,7 @@ describe("parseSessionUpdate", () => {
     });
     expect(call.items[0].kind).toBe("tool_call");
     expect(call.items[0].toolCallId).toBe("abc");
-    expect(call.items[0].status).toBe("in_progress");
+    expect(call.items[0].status).toBe("in_progress"); // explicit status from fixture
 
     const update = parseSessionUpdate({
       sessionUpdate: "tool_call_update",

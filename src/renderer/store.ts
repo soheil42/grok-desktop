@@ -707,20 +707,65 @@ export const useAppStore = create<AppState>((set, get) => ({
         text: outbound,
         sessionId: thread.sessionId || undefined,
       });
+      // Turn finished — settle any tools still painted as running
       set((s) => ({
-        threads: s.threads.map((t) =>
-          t.id === threadId ? { ...t, isStreaming: false } : t,
-        ),
+        threads: s.threads.map((t) => {
+          if (t.id !== threadId) return t;
+          return {
+            ...t,
+            isStreaming: false,
+            error: null,
+            items: t.items.map((it) => {
+              if (
+                (it.kind === "tool_call" || it.kind === "tool_result") &&
+                (it.status === "pending" || it.status === "in_progress" || !it.status)
+              ) {
+                return { ...it, status: "completed" as const, kind: "tool_result" as const };
+              }
+              return it;
+            }),
+          };
+        }),
         statusLine: "Ready",
       }));
       await get().refreshProjects();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // Timeout of the prompt RPC often means the turn is still streaming;
+      // don't hard-fail the whole thread if we already have output.
+      const isTimeout = /timeout/i.test(msg);
       set((s) => ({
-        threads: s.threads.map((t) =>
-          t.id === threadId ? { ...t, isStreaming: false, error: msg } : t,
-        ),
-        statusLine: msg,
+        threads: s.threads.map((t) => {
+          if (t.id !== threadId) return t;
+          const hasContent = t.items.some(
+            (it) => it.kind === "agent_text" || it.kind === "tool_result",
+          );
+          if (isTimeout && hasContent) {
+            return {
+              ...t,
+              isStreaming: false,
+              error: null,
+              items: t.items.map((it) =>
+                (it.kind === "tool_call" || it.kind === "tool_result") &&
+                (it.status === "pending" || it.status === "in_progress" || !it.status)
+                  ? { ...it, status: "completed" as const, kind: "tool_result" as const }
+                  : it,
+              ),
+            };
+          }
+          return {
+            ...t,
+            isStreaming: false,
+            error: msg,
+            items: t.items.map((it) =>
+              (it.kind === "tool_call" || it.kind === "tool_result") &&
+              (it.status === "in_progress" || it.status === "pending")
+                ? { ...it, status: "failed" as const }
+                : it,
+            ),
+          };
+        }),
+        statusLine: isTimeout ? "Turn ended (timeout) — reply may still be complete" : msg,
       }));
     }
   },

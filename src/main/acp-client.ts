@@ -348,8 +348,17 @@ export class GrokAcpClient extends EventEmitter {
     this.proc.stdin.write(JSON.stringify(msg) + "\n");
   }
 
-  private request(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private request(
+    method: string,
+    params: Record<string, unknown>,
+    opts?: { timeoutMs?: number },
+  ): Promise<unknown> {
     const id = this.nextId++;
+    // session/prompt holds until the full agent turn finishes (tools + model).
+    // 2 minutes was far too short for real coding tasks → false "ACP request timeout".
+    const timeoutMs =
+      opts?.timeoutMs ??
+      (method === "session/prompt" ? 45 * 60_000 : 120_000);
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       try {
@@ -357,13 +366,16 @@ export class GrokAcpClient extends EventEmitter {
       } catch (e) {
         this.pending.delete(id);
         reject(e instanceof Error ? e : new Error(String(e)));
+        return;
       }
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`ACP request timeout: ${method}`));
-        }
-      }, 120_000);
+      if (timeoutMs > 0) {
+        setTimeout(() => {
+          if (this.pending.has(id)) {
+            this.pending.delete(id);
+            reject(new Error(`ACP request timeout: ${method}`));
+          }
+        }, timeoutMs);
+      }
     });
   }
 

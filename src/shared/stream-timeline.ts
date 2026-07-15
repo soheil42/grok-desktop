@@ -5,9 +5,9 @@
  * - collapse consecutive same-class tools ("Read 4 files", "3 searches")
  * - collapse consecutive thoughts
  */
-import type { StreamItem } from "./types.js";
+import type { StreamItem, ToolCallStatus } from "./types.js";
 import { filterVisibleStreamItems } from "./stream-filter.js";
-import { coalesceStreamItems } from "./acp-parser.js";
+import { coalesceStreamItems, preferToolStatus } from "./acp-parser.js";
 
 export type ToolClass =
   | "read"
@@ -264,6 +264,22 @@ export function mergeToolsById(items: StreamItem[]): StreamItem[] {
     return score(b) >= score(a) ? b : a;
   };
 
+  const finalizeTool = (t: StreamItem): StreamItem => {
+    const cur = t.status;
+    // Once we have a result payload, stop blinking as "running"
+    if (cur === "failed" || cur === "cancelled" || cur === "completed") {
+      return { ...t, status: cur };
+    }
+    if (
+      t.output != null ||
+      (t.diffs && t.diffs.length > 0) ||
+      t.kind === "tool_result"
+    ) {
+      return { ...t, status: "completed" };
+    }
+    return { ...t, status: cur || "pending" };
+  };
+
   for (const item of items) {
     if (
       (item.kind === "tool_call" || item.kind === "tool_result") &&
@@ -272,17 +288,20 @@ export function mergeToolsById(items: StreamItem[]): StreamItem[] {
       const id = item.toolCallId;
       const prev = byId.get(id);
       if (!prev) {
-        byId.set(id, { ...item, kind: "tool_result" });
+        byId.set(id, { ...item });
         order.push(id);
       } else {
         byId.set(id, {
           ...prev,
           ...item,
           id: prev.id,
-          kind: "tool_result",
+          kind:
+            item.kind === "tool_result" || prev.kind === "tool_result"
+              ? "tool_result"
+              : "tool_call",
           title: betterTitle(prev.title, item.title),
           toolName: item.toolName || prev.toolName,
-          status: item.status || prev.status,
+          status: preferToolStatus(prev.status, item.status),
           input: item.input ?? prev.input,
           output: item.output ?? prev.output,
           text: item.text || prev.text,
@@ -294,9 +313,18 @@ export function mergeToolsById(items: StreamItem[]): StreamItem[] {
       continue;
     }
     if (order.length && item.kind !== "tool_call" && item.kind !== "tool_result") {
+      // Non-tool content after tools ⇒ those tools finished their turn
       for (const id of order) {
         const t = byId.get(id);
-        if (t) out.push(t);
+        if (t) {
+          const fin = finalizeTool(t);
+          // Agent continued past this tool — if still running, treat as done
+          if (fin.status === "pending" || fin.status === "in_progress") {
+            out.push({ ...fin, status: "completed" });
+          } else {
+            out.push(fin);
+          }
+        }
         byId.delete(id);
       }
       order.length = 0;
@@ -305,7 +333,7 @@ export function mergeToolsById(items: StreamItem[]): StreamItem[] {
   }
   for (const id of order) {
     const t = byId.get(id);
-    if (t) out.push(t);
+    if (t) out.push(finalizeTool(t));
   }
   return out;
 }
@@ -367,17 +395,18 @@ export function buildTimeline(items: StreamItem[]): TimelineEntry[] {
       }
       // Group 2+ of same class (including search/web/other batches)
       if (group.length >= 2) {
+        const groupStatus = group.some((g) => g.status === "failed")
+          ? "failed"
+          : group.some((g) => g.status === "in_progress")
+            ? "in_progress"
+            : "completed";
         timeline.push({
           type: "tool_group",
           id: `tg-${group[0].id}`,
           toolClass: cls,
           label: toolClassLabel(cls, group.length),
           items: group,
-          status: group.every((g) => g.status === "completed" || !g.status)
-            ? "completed"
-            : group.some((g) => g.status === "failed")
-              ? "failed"
-              : "done",
+          status: groupStatus,
         });
         i = j;
         continue;

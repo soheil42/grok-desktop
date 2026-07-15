@@ -44,8 +44,9 @@ function extractText(content: AcpSessionUpdate["content"]): string {
   return "";
 }
 
-function mapStatus(status: string | undefined): ToolCallStatus {
-  switch ((status || "").toLowerCase()) {
+function mapStatus(status: string | undefined): ToolCallStatus | undefined {
+  if (status == null || status === "") return undefined;
+  switch (String(status).toLowerCase()) {
     case "pending":
       return "pending";
     case "in_progress":
@@ -53,6 +54,7 @@ function mapStatus(status: string | undefined): ToolCallStatus {
       return "in_progress";
     case "completed":
     case "success":
+    case "done":
       return "completed";
     case "failed":
     case "error":
@@ -61,8 +63,32 @@ function mapStatus(status: string | undefined): ToolCallStatus {
     case "canceled":
       return "cancelled";
     default:
-      return "in_progress";
+      // Unknown ACP status — do not invent "in_progress" (that blinks forever)
+      return undefined;
   }
+}
+
+/** Prefer a terminal status over a transient one when merging tool updates. */
+export function preferToolStatus(
+  prev?: ToolCallStatus | null,
+  next?: ToolCallStatus | null,
+): ToolCallStatus | undefined {
+  const rank = (s?: ToolCallStatus | null) => {
+    switch (s) {
+      case "failed":
+      case "cancelled":
+        return 4;
+      case "completed":
+        return 3;
+      case "in_progress":
+        return 2;
+      case "pending":
+        return 1;
+      default:
+        return 0;
+    }
+  };
+  return rank(next) >= rank(prev) ? next || prev || undefined : prev || next || undefined;
 }
 
 function extractDiffs(update: AcpSessionUpdate): DiffHunk[] | undefined {
@@ -196,7 +222,7 @@ export function parseSessionUpdate(
             ? String(body.title)
             : "tool",
         title: body.title ? String(body.title) : undefined,
-        status: mapStatus(body.status),
+        status: mapStatus(body.status) ?? "pending",
         input: body.rawInput ?? (body as { input?: unknown }).input,
         diffs: extractDiffs(body),
         raw: body,
@@ -205,11 +231,17 @@ export function parseSessionUpdate(
     }
     case "tool_call_update": {
       const diffs = extractDiffs(body);
-      const status = body.status ? mapStatus(body.status) : undefined;
-      const hasOutput = body.rawOutput != null || (body as { output?: unknown }).output != null;
+      let status = mapStatus(body.status);
+      const hasOutput =
+        body.rawOutput != null || (body as { output?: unknown }).output != null;
+      // Final-looking updates without status still count as completed
+      if (!status && (hasOutput || diffs?.length)) status = "completed";
       items.push({
         id: nextId("toolu"),
-        kind: hasOutput || status === "completed" || status === "failed" ? "tool_result" : "tool_call",
+        kind:
+          hasOutput || status === "completed" || status === "failed"
+            ? "tool_result"
+            : "tool_call",
         timestamp: ts,
         toolCallId: body.toolCallId ? String(body.toolCallId) : undefined,
         toolName: body.kind ? String(body.kind) : undefined,

@@ -326,18 +326,20 @@ function ToolBody({ item, audit }: { item: StreamItem; audit?: boolean }) {
 /** Status indicator — color only (no "completed"/"failed" text). */
 function StatusDot({ status }: { status?: string | null }) {
   const s = (status || "").toLowerCase();
-  let kind = "pending";
-  if (s === "completed" || s === "success") kind = "ok";
+  let kind = "idle";
+  // Only actively running tools blink (cyan). Pending is static grey; done is green.
+  if (s === "completed" || s === "success" || s === "done" || s === "ok") kind = "ok";
   else if (s === "failed" || s === "error") kind = "err";
-  else if (s === "in_progress" || s === "running" || s === "pending") kind = "run";
+  else if (s === "in_progress" || s === "running") kind = "run";
   else if (s === "cancelled" || s === "canceled") kind = "cancel";
-  else if (!s) kind = "idle";
+  else if (s === "pending") kind = "pending";
+  else if (!s) kind = "ok"; // unknown/empty after merge ⇒ treat as settled
   return (
     <span
       className={`status-dot status-dot--${kind}`}
-      title={status || undefined}
-      aria-label={status || "status"}
-      data-status={status || ""}
+      title={status || "completed"}
+      aria-label={status || "completed"}
+      data-status={status || "completed"}
     />
   );
 }
@@ -583,10 +585,7 @@ export function StreamItemView({
         </div>
         {uniqueImages.length > 0 && <ImageGallery images={uniqueImages} />}
         {parsed.text.trim() ? (
-          <div
-            className="msg-bubble user"
-            dir={dir === "auto" ? undefined : dir}
-          >
+          <div className={`msg-bubble user ${dir === "rtl" ? "is-rtl-prose" : ""}`}>
             <Md>{parsed.text}</Md>
           </div>
         ) : null}
