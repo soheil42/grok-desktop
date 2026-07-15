@@ -3,7 +3,7 @@ import { createInterface, type Interface } from "node:readline";
 import { EventEmitter } from "node:events";
 import { parseJsonRpcLine } from "../shared/acp-parser.js";
 import {
-  handleAgentClientRequest,
+  handleAgentClientRequestAsync,
   isAgentToClientCapabilityMethod,
 } from "../shared/client-requests.js";
 import type { PlanApprovalRequest } from "../shared/plan-approval.js";
@@ -196,18 +196,27 @@ export class GrokAcpClient extends EventEmitter {
         parsed.id !== undefined ? preserveJsonRpcId(parsed.id) : undefined;
 
       // Advertised fs / terminal capabilities — always answer so the agent never hangs.
+      // Terminal wait_for_exit is async (real process host).
       if (isAgentToClientCapabilityMethod(parsed.method) && rpcId !== undefined) {
-        const outcome = handleAgentClientRequest(
-          parsed.method,
-          (parsed.params as Record<string, unknown>) || {},
-          { cwd: this.cwd },
-        );
-        if (outcome.ok) {
-          this.respond(rpcId, outcome.result);
-        } else {
-          this.respondError(rpcId, outcome.message);
-        }
-        this.emit("log", `client-request ${parsed.method} → ${outcome.ok ? "ok" : "error"}`);
+        const method = parsed.method;
+        const params = (parsed.params as Record<string, unknown>) || {};
+        void handleAgentClientRequestAsync(method, params, { cwd: this.cwd })
+          .then((outcome) => {
+            if (outcome.ok) {
+              this.respond(rpcId, outcome.result);
+            } else {
+              this.respondError(rpcId, outcome.message, outcome.code);
+            }
+            this.emit(
+              "log",
+              `client-request ${method} → ${outcome.ok ? "ok" : "error"}`,
+            );
+          })
+          .catch((e) => {
+            const msg = e instanceof Error ? e.message : String(e);
+            this.respondError(rpcId, msg);
+            this.emit("log", `client-request ${method} threw: ${msg}`);
+          });
         return;
       }
 

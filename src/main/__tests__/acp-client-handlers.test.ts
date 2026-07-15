@@ -9,7 +9,7 @@ import path from "node:path";
  * We stub stdin writes and feed agent→client requests as if they came from stdout.
  */
 describe("GrokAcpClient client-request handling (shipped class)", () => {
-  it("answers fs/read_text_file with a JSON-RPC response using the original numeric id", () => {
+  it("answers fs/read_text_file with a JSON-RPC response using the original numeric id", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-acp-cli-"));
     fs.writeFileSync(path.join(dir, "a.txt"), "from-disk");
     const client = new GrokAcpClient({ cwd: dir, alwaysApprove: false });
@@ -35,7 +35,7 @@ describe("GrokAcpClient client-request handling (shipped class)", () => {
       }),
     );
 
-    expect(writes.length).toBe(1);
+    await vi.waitFor(() => expect(writes.length).toBe(1));
     const msg = JSON.parse(writes[0]);
     expect(msg.id).toBe(99);
     expect(typeof msg.id).toBe("number");
@@ -43,7 +43,7 @@ describe("GrokAcpClient client-request handling (shipped class)", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("answers terminal/create so capability requests never hang", () => {
+  it("answers terminal/create with real process + ACP shape", async () => {
     const client = new GrokAcpClient({ cwd: process.cwd(), alwaysApprove: false });
     const writes: string[] = [];
     (client as unknown as { proc: { stdin: { writable: boolean; write: (s: string) => void } } }).proc = {
@@ -58,15 +58,17 @@ describe("GrokAcpClient client-request handling (shipped class)", () => {
         jsonrpc: "2.0",
         id: "term-1",
         method: "terminal/create",
-        params: {},
+        params: { command: "echo", args: ["ok"] },
       }),
     );
 
-    expect(writes.length).toBe(1);
+    await vi.waitFor(() => expect(writes.length).toBe(1));
     const msg = JSON.parse(writes[0]);
     expect(msg.id).toBe("term-1");
     expect(typeof msg.id).toBe("string");
     expect(msg.result.terminalId).toBeTruthy();
+    // Must not include legacy stub fields that break deserialize
+    expect(msg.result.supported).toBeUndefined();
   });
 
   it("emits permission with numeric id and responds with same type when alwaysApprove", () => {

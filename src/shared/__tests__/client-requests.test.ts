@@ -65,11 +65,46 @@ describe("handleAgentClientRequest", () => {
     }
   });
 
-  it("acknowledges terminal/create without hanging", () => {
-    const r = handleAgentClientRequest("terminal/create", {}, { cwd: process.cwd() });
+  it("creates a real terminal and returns ACP-shaped result", async () => {
+    const { handleAgentClientRequestAsync } = await import("../client-requests.js");
+    const { releaseTerminal } = await import("../terminal-host.js");
+    const r = await handleAgentClientRequestAsync(
+      "terminal/create",
+      { command: "echo", args: ["hello-acp"] },
+      { cwd: process.cwd() },
+    );
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect((r.result as { terminalId: string }).terminalId).toMatch(/^term-/);
+      const tid = (r.result as { terminalId: string }).terminalId;
+      expect(tid).toMatch(/^term-/);
+      // Strict shape: only terminalId (no extra keys required, but must have it)
+      expect((r.result as { terminalId: string }).terminalId).toBeTruthy();
+      const wait = await handleAgentClientRequestAsync(
+        "terminal/wait_for_exit",
+        { terminalId: tid },
+        { cwd: process.cwd() },
+      );
+      expect(wait.ok).toBe(true);
+      if (wait.ok) {
+        expect((wait.result as { exitCode: number }).exitCode).toBe(0);
+      }
+      const out = await handleAgentClientRequestAsync(
+        "terminal/output",
+        { terminalId: tid },
+        { cwd: process.cwd() },
+      );
+      expect(out.ok).toBe(true);
+      if (out.ok) {
+        const body = out.result as {
+          output: string;
+          truncated: boolean;
+          exitStatus: { exitCode: number | null } | null;
+        };
+        expect(body.output).toMatch(/hello-acp/);
+        expect(typeof body.truncated).toBe("boolean");
+        expect(body.exitStatus?.exitCode).toBe(0);
+      }
+      releaseTerminal(tid);
     }
   });
 
