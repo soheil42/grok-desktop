@@ -5,6 +5,7 @@ import {
   dialog,
   shell,
   nativeImage,
+  screen,
   type OpenDialogOptions,
 } from "electron";
 import path from "node:path";
@@ -58,6 +59,91 @@ type ThreadBinding = {
 const bindings = new Map<string, ThreadBinding>();
 let mainWindow: BrowserWindow | null = null;
 
+const DEFAULT_WINDOW = {
+  width: 1440,
+  height: 900,
+  minWidth: 960,
+  minHeight: 640,
+};
+
+type WindowState = {
+  width: number;
+  height: number;
+  x?: number;
+  y?: number;
+  isMaximized?: boolean;
+};
+
+function windowStatePath(): string {
+  return path.join(app.getPath("userData"), "window-state.json");
+}
+
+function loadWindowState(): WindowState {
+  try {
+    const raw = fs.readFileSync(windowStatePath(), "utf8");
+    const parsed = JSON.parse(raw) as Partial<WindowState>;
+    const width = Number(parsed.width);
+    const height = Number(parsed.height);
+    if (
+      Number.isFinite(width) &&
+      Number.isFinite(height) &&
+      width >= DEFAULT_WINDOW.minWidth &&
+      height >= DEFAULT_WINDOW.minHeight
+    ) {
+      const state: WindowState = {
+        width: Math.round(width),
+        height: Math.round(height),
+        isMaximized: Boolean(parsed.isMaximized),
+      };
+      if (Number.isFinite(Number(parsed.x))) state.x = Math.round(Number(parsed.x));
+      if (Number.isFinite(Number(parsed.y))) state.y = Math.round(Number(parsed.y));
+      return state;
+    }
+  } catch {
+    // first launch or corrupt file
+  }
+  return {
+    width: DEFAULT_WINDOW.width,
+    height: DEFAULT_WINDOW.height,
+  };
+}
+
+function saveWindowState(win: BrowserWindow): void {
+  try {
+    if (win.isDestroyed()) return;
+    const isMaximized = win.isMaximized();
+    // Prefer normal bounds so restoring after maximize doesn't keep fullscreen size.
+    const bounds = isMaximized ? win.getNormalBounds() : win.getBounds();
+    const state: WindowState = {
+      width: Math.max(DEFAULT_WINDOW.minWidth, bounds.width),
+      height: Math.max(DEFAULT_WINDOW.minHeight, bounds.height),
+      x: bounds.x,
+      y: bounds.y,
+      isMaximized,
+    };
+    fs.mkdirSync(path.dirname(windowStatePath()), { recursive: true });
+    fs.writeFileSync(windowStatePath(), JSON.stringify(state, null, 2), "utf8");
+  } catch (e) {
+    console.warn("[grok-desktop] failed to save window state:", e);
+  }
+}
+
+function trackWindowState(win: BrowserWindow): void {
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleSave = () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveWindowState(win), 200);
+  };
+  win.on("resize", scheduleSave);
+  win.on("move", scheduleSave);
+  win.on("maximize", scheduleSave);
+  win.on("unmaximize", scheduleSave);
+  win.on("close", () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveWindowState(win);
+  });
+}
+
 function grokHome(): string {
   return process.env.GROK_HOME?.trim() || defaultGrokHome();
 }
@@ -109,12 +195,15 @@ function applyAppIcon(): void {
 function createWindow(): BrowserWindow {
   const iconPath = resolveAppIconPath();
   const iconImage = nativeImage.createFromPath(iconPath);
+  const saved = loadWindowState();
 
   const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 960,
-    minHeight: 640,
+    width: saved.width,
+    height: saved.height,
+    x: saved.x,
+    y: saved.y,
+    minWidth: DEFAULT_WINDOW.minWidth,
+    minHeight: DEFAULT_WINDOW.minHeight,
     title: "Grok Desktop",
     backgroundColor: "#050505",
     // Windows/Linux window icon; macOS dock handled by applyAppIcon()
@@ -128,6 +217,27 @@ function createWindow(): BrowserWindow {
     show: false,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
   });
+
+  // If saved position is off-screen (e.g. unplugged display), center instead.
+  if (saved.x != null && saved.y != null) {
+    const bounds = win.getBounds();
+    const onScreen = screen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      return (
+        bounds.x + bounds.width > a.x &&
+        bounds.x < a.x + a.width &&
+        bounds.y + bounds.height > a.y &&
+        bounds.y < a.y + a.height
+      );
+    });
+    if (!onScreen) win.center();
+  }
+
+  if (saved.isMaximized) {
+    win.maximize();
+  }
+
+  trackWindowState(win);
 
   win.once("ready-to-show", () => {
     // Re-apply dock icon when window shows (dev `electron .` often resets it)
