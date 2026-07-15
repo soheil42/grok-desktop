@@ -8,6 +8,7 @@ import { TimelineEntryView, StreamItemView } from "./components/StreamItemView";
 import { PermissionModal } from "./components/PermissionModal";
 import { PlanApprovalModal } from "./components/PlanApprovalModal";
 import { UserQuestionsModal } from "./components/UserQuestionsModal";
+import { RewindModal, type RewindPointRow } from "./components/RewindModal";
 import { detectTextDirection, shellDocumentAttrs } from "@shared/rtl";
 import { buildTimeline, tailTimeline } from "@shared/stream-timeline";
 import { questionsFromStreamItem } from "@shared/user-questions";
@@ -65,16 +66,33 @@ export default function App() {
     respondPlan,
     respondQuestions,
     skipQuestions,
+    listRewindPoints,
+    executeRewind,
+    forkConversation,
   } = useAppStore();
 
   const [draft, setDraft] = useState("");
   const [inputDir, setInputDir] = useState<"ltr" | "rtl" | "auto">("auto");
   const [showAllHistory, setShowAllHistory] = useState(false);
+  const [rewindOpen, setRewindOpen] = useState(false);
+  const [rewindPoints, setRewindPoints] = useState<RewindPointRow[]>([]);
+  const [rewindLoading, setRewindLoading] = useState(false);
   const streamRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stickBottom = useRef(true);
 
-  // Allow tool chips to re-open a stuck ask_user_question form
+  const openRewindPicker = async () => {
+    setRewindOpen(true);
+    setRewindLoading(true);
+    try {
+      const points = await listRewindPoints();
+      setRewindPoints(points);
+    } finally {
+      setRewindLoading(false);
+    }
+  };
+
+  // Tool chips + message actions (rewind / fork / reopen questions)
   useEffect(() => {
     (window as unknown as { __grokReopenQuestions?: (item: StreamItem) => void }).__grokReopenQuestions =
       (item: StreamItem) => {
@@ -96,9 +114,48 @@ export default function App() {
           pending: !live || Boolean(live.pending),
         });
       };
+
+    (window as unknown as { __grokRewindToItem?: (id: string) => void }).__grokRewindToItem =
+      (itemId: string) => {
+        const thread = useAppStore
+          .getState()
+          .threads.find((t) => t.id === useAppStore.getState().activeThreadId);
+        if (!thread) return;
+        let userIndex = 0;
+        for (const it of thread.items) {
+          if (it.kind !== "user") continue;
+          if (it.id === itemId) {
+            void (async () => {
+              const ok = window.confirm(
+                `Rewind to this message?\n\nConversation after it will be discarded and file changes from later turns restored (CLI /rewind).`,
+              );
+              if (!ok) return;
+              await useAppStore.getState().executeRewind(userIndex);
+            })();
+            return;
+          }
+          userIndex += 1;
+        }
+      };
+
+    (window as unknown as { __grokForkFromItem?: (id: string) => void }).__grokForkFromItem =
+      (_itemId: string) => {
+        void (async () => {
+          const ok = window.confirm(
+            "Fork this conversation into a new chat?\n\nHistory is copied; the original chat is left as-is (CLI /fork).",
+          );
+          if (!ok) return;
+          await useAppStore.getState().forkConversation();
+        })();
+      };
+
     return () => {
       delete (window as unknown as { __grokReopenQuestions?: unknown })
         .__grokReopenQuestions;
+      delete (window as unknown as { __grokRewindToItem?: unknown })
+        .__grokRewindToItem;
+      delete (window as unknown as { __grokForkFromItem?: unknown })
+        .__grokForkFromItem;
     };
   }, []);
 
@@ -421,6 +478,34 @@ export default function App() {
                   Stop
                 </button>
               )}
+              {activeThread?.sessionId && !activeThread.isStreaming && (
+                <>
+                  <button
+                    type="button"
+                    className="sm ghost"
+                    title="Rewind to an earlier message (CLI /rewind)"
+                    onClick={() => void openRewindPicker()}
+                  >
+                    Rewind
+                  </button>
+                  <button
+                    type="button"
+                    className="sm ghost"
+                    title="Fork conversation into a new chat (CLI /fork)"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          "Fork this conversation into a new chat? History is copied; original is kept.",
+                        )
+                      ) {
+                        void forkConversation();
+                      }
+                    }}
+                  >
+                    Fork
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 className="sm ghost"
@@ -616,6 +701,18 @@ export default function App() {
         <PermissionModal
           permission={permission}
           onRespond={(allow, optionId) => void respondPermission(allow, optionId)}
+        />
+      )}
+
+      {rewindOpen && (
+        <RewindModal
+          points={rewindPoints}
+          loading={rewindLoading}
+          onClose={() => setRewindOpen(false)}
+          onPick={(idx) => {
+            setRewindOpen(false);
+            void executeRewind(idx);
+          }}
         />
       )}
     </div>

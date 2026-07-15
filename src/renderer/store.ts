@@ -88,6 +88,8 @@ type AppState = {
   openProjectDialog: () => Promise<void>;
   cycleAgentMode: () => void;
   setAgentMode: (m: AgentMode) => void;
+  /** Push Agent/Plan/Auto onto the live ACP session (permission mode). */
+  syncAgentModeToSession: (mode?: AgentMode) => Promise<void>;
   createThread: (cwd?: string, title?: string) => string;
   selectThread: (threadId: string) => void;
   deleteThread: (threadId: string) => Promise<void>;
@@ -112,6 +114,20 @@ type AppState = {
   setPermission: (p: PermissionRequest | null) => void;
   setPlanApproval: (p: PlanApprovalRequest | null) => void;
   setUserQuestions: (p: UserQuestionRequest | null) => void;
+  /** List CLI rewind points for the active session. */
+  listRewindPoints: () => Promise<
+    Array<{
+      prompt_index: number;
+      created_at?: string;
+      num_file_snapshots?: number;
+      has_file_changes?: boolean;
+      prompt_preview?: string;
+    }>
+  >;
+  /** Rewind conversation (+ files) to a user prompt index. */
+  executeRewind: (targetPromptIndex: number) => Promise<boolean>;
+  /** Fork session into a new chat thread (CLI /fork parity). */
+  forkConversation: (directive?: string) => Promise<string | null>;
 };
 
 /** Queued answers when user submits before the live x.ai/ask_user_question RPC arrives. */
@@ -349,21 +365,38 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   cycleAgentMode: () => {
-    set((s) => {
-      const i = AGENT_MODE_ORDER.indexOf(s.agentMode);
-      const next = AGENT_MODE_ORDER[(i + 1) % AGENT_MODE_ORDER.length];
-      return {
-        agentMode: next,
-        statusLine:
-          next === "plan"
-            ? "Plan mode — design first, then approve"
-            : next === "auto"
-              ? "Auto mode — tools auto-approved"
-              : "Agent mode — ask before risky tools",
-      };
-    });
+    const i = AGENT_MODE_ORDER.indexOf(get().agentMode);
+    const next = AGENT_MODE_ORDER[(i + 1) % AGENT_MODE_ORDER.length];
+    get().setAgentMode(next);
   },
-  setAgentMode: (m) => set({ agentMode: m }),
+  setAgentMode: (m) => {
+    set({
+      agentMode: m,
+      statusLine:
+        m === "plan"
+          ? "Plan mode — design first, then approve"
+          : m === "auto"
+            ? "Auto mode — tools auto-approved"
+            : "Agent mode — ask before tools",
+    });
+    void get().syncAgentModeToSession(m);
+  },
+  syncAgentModeToSession: async (mode) => {
+    const desktop = api();
+    const m = mode ?? get().agentMode;
+    const threadId = get().activeThreadId;
+    if (!desktop || !threadId) return;
+    const thread = get().threads.find((t) => t.id === threadId);
+    try {
+      await desktop.setAgentMode({
+        threadId,
+        mode: m,
+        sessionId: thread?.sessionId || undefined,
+      });
+    } catch {
+      // Agent may not be started yet — startSession will apply mode
+    }
+  },
 
   createThread: (cwd, title) => {
     const projectCwd = cwd || get().activeProjectCwd || processCwdFallback();
@@ -748,6 +781,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
     // Auto mode: approve non-plan/non-question tools without modal.
+    // Main process also auto-allows when setAlwaysApprove is true; either path
+    // is fine as long as Agent mode never auto-allows (that was the stuck-tools bug).
     if (get().agentMode === "auto" && desktop) {
       void desktop.respondPermission({
         threadId: p.threadId || get().activeThreadId || "",
@@ -755,9 +790,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         optionId: "allow-once",
         allow: true,
       });
+      set({ statusLine: "Auto-approved tool", permission: null });
       return;
     }
     get().setPermission(p);
+    set({
+      statusLine: `Permission: ${p.title || "Allow tool?"}`,
+    });
   },
 
   openUserQuestions: (p) => {
@@ -1058,6 +1097,230 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPermission: (p) => set({ permission: p }),
   setPlanApproval: (p) => set({ planApproval: p }),
   setUserQuestions: (p) => set({ userQuestions: p }),
+
+  listRewindPoints: async () => {
+    const desktop = api();
+    const threadId = get().activeThreadId;
+    const thread = get().threads.find((t) => t.id === threadId);
+    if (!desktop || !threadId || !thread?.sessionId) return [];
+    try {
+      // Ensure agent is attached
+      if (!thread.sessionId) return [];
+      try {
+        await desktop.startSession({
+          threadId,
+          cwd: thread.cwd,
+          sessionId: thread.sessionId,
+          alwaysApprove: get().agentMode === "auto",
+        });
+      } catch {
+        // already running
+      }
+      const res = await desktop.listRewindPoints({
+        threadId,
+        sessionId: thread.sessionId,
+      });
+      return res.points || [];
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      set({ statusLine: `Rewind list failed: ${msg}` });
+      return [];
+    }
+  },
+
+  executeRewind: async (targetPromptIndex) => {
+    const desktop = api();
+    const threadId = get().activeThreadId;
+    const thread = get().threads.find((t) => t.id === threadId);
+    if (!desktop || !threadId || !thread?.sessionId) {
+      set({ statusLine: "No session to rewind" });
+      return false;
+    }
+    try {
+      set({ statusLine: `Rewinding to prompt #${targetPromptIndex}…` });
+      const result = await desktop.executeRewind({
+        threadId,
+        sessionId: thread.sessionId,
+        targetPromptIndex,
+        mode: "all",
+      });
+      if (result?.error || result?.success === false) {
+        set({
+          statusLine: result?.error || "Rewind failed",
+        });
+        return false;
+      }
+
+      // Truncate local UI to the chosen user turn (prompt_index maps to Nth user msg)
+      let userCount = 0;
+      let cut = thread.items.length;
+      for (let i = 0; i < thread.items.length; i++) {
+        if (thread.items[i].kind === "user") {
+          if (userCount === targetPromptIndex) {
+            // keep this user message and drop everything after
+            cut = i + 1;
+            break;
+          }
+          userCount += 1;
+        }
+      }
+
+      // Prefer reloading history from disk after agent rewound
+      let history: StreamItem[] = thread.items.slice(0, cut);
+      if (thread.sessionPath) {
+        try {
+          const raw = (await desktop.loadSessionHistory(
+            thread.sessionPath,
+          )) as StreamItem[];
+          if (raw?.length) history = prepareHistoryItems(raw, 180);
+        } catch {
+          // keep truncated local items
+        }
+      }
+
+      set((s) => ({
+        threads: s.threads.map((t) =>
+          t.id === threadId
+            ? {
+                ...t,
+                items: history,
+                isStreaming: false,
+                error: null,
+              }
+            : t,
+        ),
+        permission: null,
+        planApproval: null,
+        userQuestions: null,
+        statusLine:
+          result?.prompt_text
+            ? `Rewound to: ${String(result.prompt_text).slice(0, 48)}`
+            : `Rewound to prompt #${targetPromptIndex}`,
+      }));
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      set({ statusLine: `Rewind failed: ${msg}` });
+      return false;
+    }
+  },
+
+  forkConversation: async (directive) => {
+    const desktop = api();
+    const threadId = get().activeThreadId;
+    const thread = get().threads.find((t) => t.id === threadId);
+    if (!desktop || !threadId || !thread?.sessionId) {
+      set({ statusLine: "No session to fork" });
+      return null;
+    }
+    try {
+      set({ statusLine: "Forking conversation…" });
+      try {
+        await desktop.startSession({
+          threadId,
+          cwd: thread.cwd,
+          sessionId: thread.sessionId,
+          alwaysApprove: get().agentMode === "auto",
+        });
+      } catch {
+        // live
+      }
+      const result = await desktop.forkSession({
+        threadId,
+        sessionId: thread.sessionId,
+        cwd: thread.cwd,
+        directive: directive || undefined,
+      });
+      const newId = result.newSessionId;
+      if (!newId) {
+        set({ statusLine: "Fork failed — no new session id" });
+        return null;
+      }
+
+      // Open forked session as a new thread
+      const forkedThreadId = uuid();
+      const title = `Fork · ${thread.title}`.slice(0, 60);
+      const placeholder: Thread = {
+        id: forkedThreadId,
+        title,
+        cwd: thread.cwd,
+        sessionId: newId,
+        sessionPath: null,
+        items: [],
+        isStreaming: false,
+        isLoadingHistory: true,
+        error: null,
+        modelId: thread.modelId,
+      };
+      set((s) => ({
+        threads: [placeholder, ...s.threads],
+        activeThreadId: forkedThreadId,
+        statusLine: "Loading forked chat…",
+      }));
+
+      // Attach + load history for the child session
+      try {
+        const attach = await desktop.startSession({
+          threadId: forkedThreadId,
+          cwd: thread.cwd,
+          sessionId: newId,
+          alwaysApprove: get().agentMode === "auto",
+        });
+        // History path: reuse parent path group via session index refresh
+        await get().refreshProjects();
+        const sessions = get().sessionsByCwd[thread.cwd] || [];
+        const child = sessions.find((s) => s.id === newId);
+        let history: StreamItem[] = [];
+        if (child?.path) {
+          try {
+            const raw = (await desktop.loadSessionHistory(
+              child.path,
+            )) as StreamItem[];
+            history = prepareHistoryItems(raw || [], 180);
+          } catch {
+            // copy from parent items as fallback
+            history = thread.items.slice();
+          }
+        } else {
+          history = thread.items.slice();
+        }
+        set((s) => ({
+          threads: s.threads.map((t) =>
+            t.id === forkedThreadId
+              ? {
+                  ...t,
+                  sessionId: attach.sessionId || newId,
+                  sessionPath: child?.path || null,
+                  items: history,
+                  isLoadingHistory: false,
+                  title: child?.title || title,
+                }
+              : t,
+          ),
+          statusLine: "Forked chat ready",
+        }));
+        if (directive?.trim()) {
+          // Optional: kick off with directive as first prompt on the fork
+          await get().sendPrompt(directive.trim());
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        set((s) => ({
+          threads: s.threads.map((t) =>
+            t.id === forkedThreadId
+              ? { ...t, isLoadingHistory: false, error: msg }
+              : t,
+          ),
+          statusLine: msg,
+        }));
+      }
+      return newId;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      set({ statusLine: `Fork failed: ${msg}` });
+      return null;
+    }
+  },
 }));
 
 function processCwdFallback(): string {

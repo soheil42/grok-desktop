@@ -18,7 +18,6 @@ describe("App shell mount", () => {
 
   beforeEach(() => {
     // Ensure no electron bridge — store uses fallback
-    // @ts-expect-error test cleanup
     delete window.grokDesktop;
     container = mount();
   });

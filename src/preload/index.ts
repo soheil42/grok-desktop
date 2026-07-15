@@ -79,6 +79,47 @@ export type DesktopApi = {
     planFilePath?: string;
   }) => Promise<{ ok: boolean; content: string; path: string | null }>;
   disposeAgent: (threadId: string) => Promise<unknown>;
+  setAgentMode: (payload: {
+    threadId: string;
+    mode: "agent" | "plan" | "auto";
+    sessionId?: string;
+  }) => Promise<{ ok: boolean; modeId?: string; alwaysApprove?: boolean }>;
+  listRewindPoints: (payload: {
+    threadId: string;
+    sessionId?: string;
+  }) => Promise<{
+    points: Array<{
+      prompt_index: number;
+      created_at?: string;
+      num_file_snapshots?: number;
+      has_file_changes?: boolean;
+      prompt_preview?: string;
+    }>;
+  }>;
+  executeRewind: (payload: {
+    threadId: string;
+    sessionId?: string;
+    targetPromptIndex: number;
+    mode?: "all" | "conversation_only" | "code_only" | "files_only";
+  }) => Promise<{
+    success?: boolean;
+    target_prompt_index?: number;
+    mode?: string;
+    reverted_files?: string[];
+    prompt_text?: string | null;
+    error?: string | null;
+  }>;
+  forkSession: (payload: {
+    threadId: string;
+    sessionId?: string;
+    cwd?: string;
+    directive?: string;
+  }) => Promise<{
+    newSessionId: string;
+    parentSessionId?: string;
+    newCwd?: string;
+    chatMessagesCopied?: number;
+  }>;
   openExternal: (url: string) => Promise<unknown>;
   openPath: (path: string) => Promise<unknown>;
   readMedia: (filePath: string) => Promise<string | null>;
@@ -109,6 +150,11 @@ const api: DesktopApi = {
     ipcRenderer.invoke("agent:questions-response", payload),
   readPlan: (payload) => ipcRenderer.invoke("sessions:read-plan", payload),
   disposeAgent: (threadId) => ipcRenderer.invoke("agent:dispose", threadId),
+  setAgentMode: (payload) => ipcRenderer.invoke("agent:set-mode", payload),
+  listRewindPoints: (payload) =>
+    ipcRenderer.invoke("agent:rewind-points", payload),
+  executeRewind: (payload) => ipcRenderer.invoke("agent:rewind-execute", payload),
+  forkSession: (payload) => ipcRenderer.invoke("agent:fork-session", payload),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
   openPath: (p) => ipcRenderer.invoke("shell:open-path", p),
   readMedia: (filePath) => ipcRenderer.invoke("media:read", filePath),
@@ -135,6 +181,6 @@ contextBridge.exposeInMainWorld("grokDesktop", api);
 
 declare global {
   interface Window {
-    grokDesktop: DesktopApi;
+    grokDesktop?: DesktopApi;
   }
 }

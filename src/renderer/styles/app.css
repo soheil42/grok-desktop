@@ -671,13 +671,45 @@ button:disabled {
 .msg-label {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.35rem;
+  width: 100%;
   font-size: 11px;
   font-weight: 650;
   color: var(--text-muted);
   margin-bottom: 0.3rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.msg-actions {
+  display: inline-flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.msg-user:hover .msg-actions,
+.msg-user:focus-within .msg-actions {
+  opacity: 1;
+}
+
+.msg-action-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.msg-action-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
 .grok-dot {
@@ -1559,6 +1591,125 @@ button:disabled {
   place-items: center;
   z-index: 50;
   padding: 1rem;
+}
+
+/* Permission / rewind must sit above other chrome and always be clickable */
+.permission-modal-backdrop {
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.permission-modal {
+  max-width: min(520px, 92vw);
+  width: min(520px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65);
+}
+
+.permission-desc {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+}
+
+.permission-hint {
+  margin-top: 0.75rem;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font);
+}
+
+.permission-hint kbd {
+  display: inline-block;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.rewind-modal {
+  max-width: min(560px, 94vw);
+  width: min(560px, 100%);
+}
+
+.rewind-intro {
+  margin: 0 0 0.75rem;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+  font-family: var(--font);
+  white-space: normal;
+}
+
+.rewind-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.rewind-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  text-align: start;
+  padding: 0.55rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.rewind-row:hover {
+  background: var(--bg-hover);
+}
+
+.rewind-row.active {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: var(--bg-active);
+}
+
+.rewind-idx {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 2rem;
+}
+
+.rewind-preview {
+  flex: 1;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font);
+}
+
+.rewind-files {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--warning);
+}
+
+.muted {
+  color: var(--text-muted);
+  font-family: var(--font);
 }
 
 .modal {

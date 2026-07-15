@@ -310,9 +310,8 @@ async function ensureClient(
   const client = new GrokAcpClient({
     cwd,
     binary: process.env.GROK_BINARY || "grok",
-    alwaysApprove:
-      opts?.alwaysApprove === true ||
-      process.env.GROK_DESKTOP_ALWAYS_APPROVE === "1",
+    // never bake always-approve into the process — use setAlwaysApprove after start
+    alwaysApprove: false,
   });
 
   binding = { client, sessionId: null, cwd, windowId: win.id };
@@ -370,6 +369,13 @@ async function ensureClient(
   });
 
   await client.start();
+  // Apply Auto mode after start so leaving Auto later still shows permission modals.
+  if (
+    opts?.alwaysApprove === true ||
+    process.env.GROK_DESKTOP_ALWAYS_APPROVE === "1"
+  ) {
+    client.setAlwaysApprove(true);
+  }
   return binding;
 }
 
@@ -525,6 +531,8 @@ function registerIpc(): void {
       const binding = await ensureClient(payload.threadId, payload.cwd, win, {
         alwaysApprove: payload.alwaysApprove,
       });
+      // Keep runtime flag in sync when reusing a live binding
+      binding.client.setAlwaysApprove(Boolean(payload.alwaysApprove));
       let sessionId: string;
       if (payload.sessionId) {
         sessionId = await binding.client.loadSession(payload.sessionId, payload.cwd);
@@ -533,7 +541,98 @@ function registerIpc(): void {
       }
       binding.sessionId = sessionId;
       binding.cwd = payload.cwd;
+      // Map desktop modes onto CLI session permission modes
+      if (payload.alwaysApprove) {
+        await binding.client.setSessionMode("auto", sessionId);
+      } else {
+        await binding.client.setSessionMode("default", sessionId);
+      }
       return { sessionId };
+    },
+  );
+
+  ipcMain.handle(
+    "agent:set-mode",
+    async (
+      _e,
+      payload: {
+        threadId: string;
+        mode: "agent" | "plan" | "auto";
+        sessionId?: string;
+      },
+    ) => {
+      const binding = bindings.get(payload.threadId);
+      if (!binding) return { ok: false, error: "No agent" };
+      const auto = payload.mode === "auto";
+      binding.client.setAlwaysApprove(auto);
+      const modeId =
+        payload.mode === "auto"
+          ? "auto"
+          : payload.mode === "plan"
+            ? "plan"
+            : "default";
+      await binding.client.setSessionMode(
+        modeId,
+        payload.sessionId || binding.sessionId || undefined,
+      );
+      return { ok: true, modeId, alwaysApprove: auto };
+    },
+  );
+
+  ipcMain.handle(
+    "agent:rewind-points",
+    async (_e, payload: { threadId: string; sessionId?: string }) => {
+      const binding = bindings.get(payload.threadId);
+      if (!binding) throw new Error("No agent");
+      const points = await binding.client.listRewindPoints(
+        payload.sessionId || binding.sessionId || undefined,
+      );
+      return { points };
+    },
+  );
+
+  ipcMain.handle(
+    "agent:rewind-execute",
+    async (
+      _e,
+      payload: {
+        threadId: string;
+        sessionId?: string;
+        targetPromptIndex: number;
+        mode?: "all" | "conversation_only" | "code_only" | "files_only";
+      },
+    ) => {
+      const binding = bindings.get(payload.threadId);
+      if (!binding) throw new Error("No agent");
+      const result = await binding.client.executeRewind(payload.targetPromptIndex, {
+        sessionId: payload.sessionId || binding.sessionId || undefined,
+        mode: payload.mode || "all",
+        force: true,
+      });
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    "agent:fork-session",
+    async (
+      _e,
+      payload: {
+        threadId: string;
+        sessionId?: string;
+        cwd?: string;
+        directive?: string;
+      },
+    ) => {
+      const binding = bindings.get(payload.threadId);
+      if (!binding) throw new Error("No agent");
+      const result = await binding.client.forkSession({
+        sourceSessionId: payload.sessionId || binding.sessionId || undefined,
+        sourceCwd: payload.cwd || binding.cwd,
+        newCwd: payload.cwd || binding.cwd,
+        directive: payload.directive,
+      });
+      return result;
     },
   );
 

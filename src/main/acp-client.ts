@@ -11,6 +11,34 @@ import type { UserQuestionRequest } from "../shared/user-questions.js";
 import { preserveJsonRpcId } from "../shared/types.js";
 import type { PermissionRequest, StreamItem } from "../shared/types.js";
 
+export type RewindPoint = {
+  prompt_index: number;
+  created_at?: string;
+  num_file_snapshots?: number;
+  has_file_changes?: boolean;
+  prompt_preview?: string;
+};
+
+export type RewindExecuteResult = {
+  success?: boolean;
+  target_prompt_index?: number;
+  mode?: string;
+  reverted_files?: string[];
+  clean_files?: string[];
+  conflicts?: string[];
+  prompt_text?: string | null;
+  error?: string | null;
+};
+
+export type ForkSessionResult = {
+  newSessionId: string;
+  chatMessagesCopied?: number;
+  updatesCopied?: number;
+  planStateCopied?: boolean;
+  newCwd?: string;
+  parentSessionId?: string;
+};
+
 export type AcpClientEvents = {
   update: (payload: {
     sessionId: string;
@@ -45,14 +73,27 @@ export class GrokAcpClient extends EventEmitter {
   private sessionId: string | null = null;
   private cwd: string;
   private binary: string;
+  /**
+   * When true, auto-allow tool permissions in the client (UI Auto mode).
+   * Prefer this over spawning with --always-approve so mode can be switched
+   * without restarting the agent process.
+   */
   private alwaysApprove: boolean;
   private stderrBuf = "";
+  private authenticated = false;
 
   constructor(opts: { cwd: string; binary?: string; alwaysApprove?: boolean }) {
     super();
     this.cwd = opts.cwd;
     this.binary = opts.binary || process.env.GROK_BINARY || "grok";
-    this.alwaysApprove = opts.alwaysApprove ?? false;
+    // Env override only — UI Auto mode uses setAlwaysApprove + session/set_mode
+    // so leaving Auto does not leave a stuck --always-approve process.
+    this.alwaysApprove =
+      opts.alwaysApprove === true || process.env.GROK_DESKTOP_ALWAYS_APPROVE === "1";
+  }
+
+  setAlwaysApprove(v: boolean): void {
+    this.alwaysApprove = v;
   }
 
   get activeSessionId(): string | null {
@@ -66,10 +107,10 @@ export class GrokAcpClient extends EventEmitter {
   async start(): Promise<void> {
     if (this.proc) return;
 
-    // Flags belong on `grok agent`, before the transport subcommand.
-    const args = ["agent"];
-    if (this.alwaysApprove) args.push("--always-approve");
-    args.push("stdio");
+    // Do not pass --always-approve here: it sticks for the process lifetime and
+    // hides permission modals after the user leaves Auto mode. Auto is handled
+    // via setAlwaysApprove + session/set_mode instead.
+    const args = ["agent", "stdio"];
 
     this.proc = spawn(this.binary, args, {
       cwd: this.cwd,
@@ -153,6 +194,11 @@ export class GrokAcpClient extends EventEmitter {
         return;
       }
 
+      const isPermissionMethod =
+        Boolean(parsed.method) &&
+        (parsed.method!.includes("permission") ||
+          parsed.method === "session/request_permission");
+
       if (parsed.updates.planApproval) {
         // Plan exit/enter must never auto-approve — user must review.
         this.emit("planApproval", parsed.updates.planApproval);
@@ -176,16 +222,12 @@ export class GrokAcpClient extends EventEmitter {
         });
       }
 
-      // Auto-respond tool permissions when alwaysApprove.
+      // Auto-respond tool permissions when alwaysApprove (UI Auto mode).
       // Never auto-respond plan exit/enter or ask_user_question *forms*
       // (those need the modal). Exception: bare ask_user_question permission
       // without questions is auto-allowed like CLI (wait_ms:0) so the tool can
       // proceed to x.ai/ask_user_question — handled below via emit.
-      if (
-        rpcId !== undefined &&
-        (parsed.method.includes("permission") ||
-          parsed.method === "session/request_permission")
-      ) {
+      if (rpcId !== undefined && isPermissionMethod) {
         const isAsk =
           Boolean(parsed.updates.userQuestions) ||
           /ask[_\s-]?user|ask\s+\d+\s+question/i.test(
@@ -211,6 +253,27 @@ export class GrokAcpClient extends EventEmitter {
               optionId: "allow-once",
             },
           });
+          this.emit("log", `auto-allow tool permission (alwaysApprove) id=${String(rpcId)}`);
+        }
+      }
+
+      // Never leave unknown agent→client requests hanging — hang = failed tools.
+      if (
+        rpcId !== undefined &&
+        !isPermissionMethod &&
+        !parsed.updates.planApproval &&
+        !parsed.updates.userQuestions &&
+        !isAgentToClientCapabilityMethod(parsed.method || "")
+      ) {
+        // Plan / ask_user_question ext methods already handled via updates above.
+        const m = parsed.method || "";
+        const isInteractiveExt =
+          m.includes("exit_plan") ||
+          m.includes("ask_user") ||
+          m.includes("askUser");
+        if (!isInteractiveExt) {
+          this.respondError(rpcId, `Client method not implemented: ${m}`, -32601);
+          this.emit("log", `reject unhandled agent request ${m}`);
         }
       }
 
@@ -298,7 +361,7 @@ export class GrokAcpClient extends EventEmitter {
       protocolVersion: 1,
       clientInfo: {
         name: "grok-desktop",
-        version: "1.0.0",
+        version: "1.0.1",
       },
       clientCapabilities: {
         fs: { readTextFile: true, writeTextFile: true },
@@ -310,10 +373,25 @@ export class GrokAcpClient extends EventEmitter {
         askUserQuestion: true,
         "x.ai/ask_user_question": true,
         "x.ai/exit_plan_mode": true,
+        cancelRewind: true,
       },
     })) as Record<string, unknown>;
     this.initialized = true;
     this.emit("log", `ACP initialized: ${JSON.stringify(result?.protocolVersion ?? result)}`);
+    await this.authenticate();
+  }
+
+  /** Use SuperGrok / CLI credentials from ~/.grok/auth.json */
+  async authenticate(): Promise<void> {
+    if (this.authenticated) return;
+    try {
+      await this.request("authenticate", { methodId: "cached_token" });
+      this.authenticated = true;
+      this.emit("log", "ACP authenticated (cached_token)");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.emit("log", `ACP authenticate skipped/failed: ${msg}`);
+    }
   }
 
   async newSession(cwd?: string): Promise<string> {
@@ -349,6 +427,76 @@ export class GrokAcpClient extends EventEmitter {
       sessionId: sid,
       prompt: [{ type: "text", text }],
     });
+  }
+
+  /**
+   * CLI permission mode: default | auto | plan | acceptEdits | …
+   * Used when user cycles Agent / Plan / Auto without restarting the agent.
+   */
+  async setSessionMode(
+    modeId: string,
+    sessionId?: string,
+  ): Promise<void> {
+    const sid = sessionId || this.sessionId;
+    if (!sid) return;
+    try {
+      await this.request("session/set_mode", { sessionId: sid, modeId });
+      this.emit("log", `session/set_mode → ${modeId}`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.emit("log", `session/set_mode failed: ${msg}`);
+    }
+  }
+
+  async listRewindPoints(sessionId?: string): Promise<RewindPoint[]> {
+    const sid = sessionId || this.sessionId;
+    if (!sid) throw new Error("No active session");
+    const result = (await this.request("_x.ai/rewind/points", {
+      sessionId: sid,
+    })) as { rewind_points?: RewindPoint[] };
+    return Array.isArray(result?.rewind_points) ? result.rewind_points : [];
+  }
+
+  async executeRewind(
+    targetPromptIndex: number,
+    opts?: {
+      sessionId?: string;
+      mode?: "all" | "conversation_only" | "code_only" | "files_only";
+      force?: boolean;
+    },
+  ): Promise<RewindExecuteResult> {
+    const sid = opts?.sessionId || this.sessionId;
+    if (!sid) throw new Error("No active session");
+    const result = (await this.request("_x.ai/rewind/execute", {
+      sessionId: sid,
+      targetPromptIndex,
+      mode: opts?.mode || "all",
+      force: opts?.force ?? true,
+    })) as RewindExecuteResult;
+    return result;
+  }
+
+  async forkSession(opts?: {
+    sourceSessionId?: string;
+    sourceCwd?: string;
+    newCwd?: string;
+    directive?: string;
+  }): Promise<ForkSessionResult> {
+    const sourceSessionId = opts?.sourceSessionId || this.sessionId;
+    if (!sourceSessionId) throw new Error("No active session to fork");
+    const sourceCwd = opts?.sourceCwd || this.cwd;
+    const newCwd = opts?.newCwd || sourceCwd;
+    const params: Record<string, unknown> = {
+      sourceSessionId,
+      sourceCwd,
+      newCwd,
+    };
+    if (opts?.directive) params.directive = opts.directive;
+    const result = (await this.request("_x.ai/session/fork", params)) as ForkSessionResult;
+    if (!result?.newSessionId) {
+      throw new Error("Fork did not return newSessionId");
+    }
+    return result;
   }
 
   async cancel(sessionId?: string): Promise<void> {

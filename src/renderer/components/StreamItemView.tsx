@@ -505,8 +505,41 @@ export function StreamItemView({
         className={`msg msg-user ${dirClass} ${anim}`.trim()}
         data-kind="user"
         data-dir={dir}
+        data-item-id={item.id}
       >
-        <div className="msg-label">You</div>
+        <div className="msg-label">
+          <span>You</span>
+          <span className="msg-actions">
+            <button
+              type="button"
+              className="msg-action-btn"
+              title="Rewind to this message (restore files + drop later turns)"
+              onClick={() =>
+                (
+                  window as unknown as {
+                    __grokRewindToItem?: (id: string) => void;
+                  }
+                ).__grokRewindToItem?.(item.id)
+              }
+            >
+              Rewind
+            </button>
+            <button
+              type="button"
+              className="msg-action-btn"
+              title="Fork a new chat from this state"
+              onClick={() =>
+                (
+                  window as unknown as {
+                    __grokForkFromItem?: (id: string) => void;
+                  }
+                ).__grokForkFromItem?.(item.id)
+              }
+            >
+              Fork
+            </button>
+          </span>
+        </div>
         {uniqueImages.length > 0 && <ImageGallery images={uniqueImages} />}
         {parsed.text.trim() ? (
           <div
