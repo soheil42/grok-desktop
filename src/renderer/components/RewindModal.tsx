@@ -54,8 +54,9 @@ export function RewindModal({ points, loading, onPick, onClose }: Props) {
         <header>Rewind conversation</header>
         <div className="body">
           <p className="rewind-intro">
-            Restore files and truncate chat history to a previous user message.
-            Changes after that point are discarded (same as CLI <code>/rewind</code>).
+            Pick a user message. It is moved back into the input, everything after
+            it is removed from chat history, and later file edits are restored
+            (same as CLI <code>/rewind</code>).
           </p>
           {loading ? (
             <p className="muted">Loading rewind points…</p>

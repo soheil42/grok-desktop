@@ -124,8 +124,13 @@ type AppState = {
       prompt_preview?: string;
     }>
   >;
-  /** Rewind conversation (+ files) to a user prompt index. */
-  executeRewind: (targetPromptIndex: number) => Promise<boolean>;
+  /**
+   * CLI-parity rewind: restore files, truncate agent chat history to before
+   * the selected user prompt, and return that prompt text for the composer.
+   */
+  executeRewind: (
+    targetPromptIndex: number,
+  ) => Promise<{ ok: boolean; promptText: string | null }>;
   /** Fork session into a new chat thread (CLI /fork parity). */
   forkConversation: (directive?: string) => Promise<string | null>;
 };
@@ -1134,10 +1139,34 @@ export const useAppStore = create<AppState>((set, get) => ({
     const thread = get().threads.find((t) => t.id === threadId);
     if (!desktop || !threadId || !thread?.sessionId) {
       set({ statusLine: "No session to rewind" });
-      return false;
+      return { ok: false, promptText: null };
     }
     try {
+      // Capture the user text from UI before the agent truncates history.
+      let localPromptText = "";
+      let cutExclusive = thread.items.length; // drop target user msg + everything after
+      {
+        let userCount = 0;
+        for (let i = 0; i < thread.items.length; i++) {
+          if (thread.items[i].kind !== "user") continue;
+          if (userCount === targetPromptIndex) {
+            localPromptText = (thread.items[i].text || "").trim();
+            // CLI: selected prompt leaves the transcript and returns to the composer
+            cutExclusive = i;
+            break;
+          }
+          userCount += 1;
+        }
+      }
+
       set({ statusLine: `Rewinding to prompt #${targetPromptIndex}…` });
+      // Cancel any in-flight turn so rewind is not blocked
+      try {
+        await desktop.cancel({ threadId });
+      } catch {
+        // ignore
+      }
+
       const result = await desktop.executeRewind({
         threadId,
         sessionId: thread.sessionId,
@@ -1148,35 +1177,44 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({
           statusLine: result?.error || "Rewind failed",
         });
-        return false;
+        return { ok: false, promptText: null };
       }
 
-      // Truncate local UI to the chosen user turn (prompt_index maps to Nth user msg)
-      let userCount = 0;
-      let cut = thread.items.length;
-      for (let i = 0; i < thread.items.length; i++) {
-        if (thread.items[i].kind === "user") {
-          if (userCount === targetPromptIndex) {
-            // keep this user message and drop everything after
-            cut = i + 1;
-            break;
-          }
-          userCount += 1;
-        }
-      }
+      // Agent returns the rewound prompt — put this in the composer (CLI parity).
+      const promptText =
+        (result?.prompt_text != null && String(result.prompt_text).trim()) ||
+        localPromptText ||
+        null;
 
-      // Prefer reloading history from disk after agent rewound
-      let history: StreamItem[] = thread.items.slice(0, cut);
-      if (thread.sessionPath) {
+      // Prefer reloading history from disk (agent truncated updates.jsonl / chat_history).
+      // Fall back to local truncate: keep only messages *before* the selected user turn.
+      // CLI: the selected user prompt is removed from history and returned as prompt_text.
+      let history: StreamItem[] = thread.items.slice(0, cutExclusive);
+      const sessionPath =
+        thread.sessionPath ||
+        (get().sessionsByCwd[thread.cwd] || []).find(
+          (s) => s.id === thread.sessionId,
+        )?.path ||
+        null;
+
+      if (sessionPath) {
+        // Brief wait so disk flush completes after rewind execute
+        await new Promise((r) => setTimeout(r, 120));
         try {
-          const raw = (await desktop.loadSessionHistory(
-            thread.sessionPath,
-          )) as StreamItem[];
-          if (raw?.length) history = prepareHistoryItems(raw, 180);
+          const raw = (await desktop.loadSessionHistory(sessionPath)) as StreamItem[];
+          history = prepareHistoryItems(raw || [], 180);
         } catch {
-          // keep truncated local items
+          // keep local truncate
         }
       }
+
+      // Ensure UI never shows the rewound user turn or anything after it.
+      // Disk may still be mid-flush; always re-cut by prompt index / text.
+      history = truncateHistoryBeforeUserPrompt(
+        history,
+        targetPromptIndex,
+        promptText,
+      );
 
       set((s) => ({
         threads: s.threads.map((t) =>
@@ -1184,6 +1222,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             ? {
                 ...t,
                 items: history,
+                sessionPath: sessionPath || t.sessionPath,
                 isStreaming: false,
                 error: null,
               }
@@ -1192,16 +1231,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         permission: null,
         planApproval: null,
         userQuestions: null,
-        statusLine:
-          result?.prompt_text
-            ? `Rewound to: ${String(result.prompt_text).slice(0, 48)}`
-            : `Rewound to prompt #${targetPromptIndex}`,
+        statusLine: promptText
+          ? `Rewound — edit and resend: ${promptText.slice(0, 48)}`
+          : `Rewound to prompt #${targetPromptIndex}`,
       }));
-      return true;
+      return { ok: true, promptText };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       set({ statusLine: `Rewind failed: ${msg}` });
-      return false;
+      return { ok: false, promptText: null };
     }
   },
 
@@ -1325,6 +1363,35 @@ export const useAppStore = create<AppState>((set, get) => ({
 
 function processCwdFallback(): string {
   return "/";
+}
+
+/**
+ * Drop the Nth user message and everything after it (CLI rewind UI parity).
+ * The rewound prompt is moved into the composer, not kept in the stream.
+ */
+export function truncateHistoryBeforeUserPrompt(
+  items: StreamItem[],
+  targetPromptIndex: number,
+  promptText?: string | null,
+): StreamItem[] {
+  const needle = (promptText || "").trim();
+  let userCount = 0;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].kind !== "user") continue;
+    if (userCount === targetPromptIndex) {
+      return items.slice(0, i);
+    }
+    userCount += 1;
+  }
+  // Index past end or history already truncated — fall back to exact text cut
+  if (needle) {
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].kind === "user" && (items[i].text || "").trim() === needle) {
+        return items.slice(0, i);
+      }
+    }
+  }
+  return items;
 }
 
 export function resolvePermissionThreadId(

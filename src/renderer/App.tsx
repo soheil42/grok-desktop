@@ -127,10 +127,21 @@ export default function App() {
           if (it.id === itemId) {
             void (async () => {
               const ok = window.confirm(
-                `Rewind to this message?\n\nConversation after it will be discarded and file changes from later turns restored (CLI /rewind).`,
+                `Rewind to this message?\n\nThis message returns to the input. Everything after it is removed from chat history, and later file changes are restored (CLI /rewind).`,
               );
               if (!ok) return;
-              await useAppStore.getState().executeRewind(userIndex);
+              const res = await useAppStore.getState().executeRewind(userIndex);
+              if (res.ok && res.promptText != null) {
+                setDraft(res.promptText);
+                setInputDir(detectTextDirection(res.promptText));
+                requestAnimationFrame(() => {
+                  inputRef.current?.focus();
+                  const el = inputRef.current;
+                  if (el) {
+                    el.selectionStart = el.selectionEnd = el.value.length;
+                  }
+                });
+              }
             })();
             return;
           }
@@ -711,7 +722,20 @@ export default function App() {
           onClose={() => setRewindOpen(false)}
           onPick={(idx) => {
             setRewindOpen(false);
-            void executeRewind(idx);
+            void (async () => {
+              const res = await executeRewind(idx);
+              if (res.ok && res.promptText != null) {
+                setDraft(res.promptText);
+                setInputDir(detectTextDirection(res.promptText));
+                requestAnimationFrame(() => {
+                  inputRef.current?.focus();
+                  const el = inputRef.current;
+                  if (el) {
+                    el.selectionStart = el.selectionEnd = el.value.length;
+                  }
+                });
+              }
+            })();
           }}
         />
       )}
