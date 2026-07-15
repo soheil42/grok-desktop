@@ -1,0 +1,4 @@
+{"method":"session/update","params":{"sessionId":"sample-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"I'll inspect the auth module."}}}}
+{"method":"session/update","params":{"sessionId":"sample-session","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Looking for middleware first."}}}}
+{"method":"session/update","params":{"sessionId":"sample-session","update":{"sessionUpdate":"tool_call","toolCallId":"tc-1","title":"read_file","kind":"read","status":"pending","rawInput":{"path":"src/auth.ts"}}}}
+{"method":"session/update","params":{"sessionId":"sample-session","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-1","status":"completed","rawOutput":"export function login() {}"}}}

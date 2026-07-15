@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <radialGradient id="g" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#1a1a1c"/>
+      <stop offset="100%" stop-color="#050505"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="url(#g)"/>
+  <circle cx="640" cy="280" r="72" fill="#0a0a0a" stroke="#fff" stroke-width="3"/>
+  <circle cx="640" cy="280" r="42" stroke="#fff" stroke-width="3" fill="none" opacity="0.9"/>
+  <circle cx="640" cy="280" r="16" fill="#fff"/>
+  <text x="640" y="420" text-anchor="middle" font-family="SF Pro Display, Helvetica, Arial, sans-serif" font-size="48" font-weight="600" fill="#f5f5f5">Grok Desktop</text>
+  <text x="640" y="470" text-anchor="middle" font-family="SF Pro Text, Helvetica, Arial, sans-serif" font-size="22" fill="#8a8a8f">Desktop app for Grok Build CLI</text>
+</svg>
