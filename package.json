@@ -19,6 +19,8 @@
     "dist": "npm run build && electron-builder --mac --dir",
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:win": "npm run build && electron-builder --win",
+    "install:local": "node scripts/install-local.mjs",
+    "dist:install": "npm run dist:mac && npm run install:local",
     "verify:launch": "node scripts/bootstrap-shell.mjs launch-1 && node scripts/bootstrap-shell.mjs launch-2",
     "verify:acp": "node scripts/acp-smoke.mjs",
     "verify:structure": "node scripts/structural-audit.mjs",
