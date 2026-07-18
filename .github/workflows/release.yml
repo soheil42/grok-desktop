@@ -27,20 +27,20 @@ jobs:
         include:
           - name: macOS arm64
             os: macos-14
-            command: npm run build && npx electron-builder --mac --arm64
+            command: npm run build && npx electron-builder --mac --arm64 -p never
             artifact: macos-arm64
             files: |
               release/*.dmg
               release/*-mac.zip
           - name: Windows x64
             os: windows-2022
-            command: npm run dist:win
+            command: npm run build && npx electron-builder --win -p never
             artifact: windows-x64
             files: |
               release/*.exe
           - name: Linux x64
             os: ubuntu-22.04
-            command: npm run dist:linux
+            command: npm run build && npx electron-builder --linux -p never
             artifact: linux-x64
             files: |
               release/*.AppImage
