@@ -165,11 +165,15 @@ function api() {
   return null;
 }
 
+function detectLocale(): string {
+  return typeof navigator !== "undefined" ? navigator.language ?? "en" : "en";
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   ready: false,
   auth: null,
   direction: "ltr",
-  locale: navigator?.language ?? "en",
+  locale: detectLocale(),
   transparencyMode: "clean",
   agentMode: "agent",
   projects: [],
@@ -205,7 +209,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           hasAuthFile: false,
           message: "Running without Electron preload.",
         },
-        direction: resolveChromeDirection("auto", navigator?.language ?? "en"),
+        direction: resolveChromeDirection("auto", detectLocale()),
       });
       return;
     }
@@ -217,7 +221,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       statusLine: boot.auth.loggedIn
         ? "Ready · Grok CLI credentials"
         : boot.auth.message,
-      direction: resolveChromeDirection("auto", navigator?.language ?? "en"),
+      direction: resolveChromeDirection("auto", detectLocale()),
     });
 
     desktop.on("agent:update", (payload) => {
