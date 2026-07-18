@@ -4,6 +4,7 @@
  * Invoked twice by verify-launch for dual-launch proof.
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
@@ -13,7 +14,7 @@ const root = path.resolve(__dirname, "..");
 const label = process.argv[2] || "launch";
 const scratch =
   process.env.GROK_SCRATCH ||
-  "/var/folders/c4/yxvvqlsn2sz9pyd2yr9jnsrw0000gn/T/grok-goal-f032dfe1736f/implementer";
+  path.join(os.tmpdir(), "grok-desktop-bootstrap");
 
 fs.mkdirSync(scratch, { recursive: true });
 
@@ -66,9 +67,9 @@ const surface = {
   streamView: appSrc.includes('data-testid="stream-view"'),
   composer: appSrc.includes('data-testid="composer"'),
   promptInput: appSrc.includes('data-testid="prompt-input"'),
-  dirToggle: appSrc.includes('data-testid="dir-toggle"'),
+  directionAware: appSrc.includes("shellDocumentAttrs") && appSrc.includes("detectTextDirection"),
   sessionResume: appSrc.includes("resumeSession"),
-  permissionModal: appSrc.includes("PermissionModal"),
+  permissionPrompt: appSrc.includes("PermissionPrompt"),
   authReuse: mainSrc.includes("detectAuth") && mainSrc.includes("auth.json") === false
     ? mainSrc.includes("getAuthStatus") || mainSrc.includes("detectAuth")
     : true,

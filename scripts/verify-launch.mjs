@@ -5,6 +5,7 @@
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const scratch =
   process.env.GROK_SCRATCH ||
-  "/var/folders/c4/yxvvqlsn2sz9pyd2yr9jnsrw0000gn/T/grok-goal-f032dfe1736f/implementer";
+  path.join(os.tmpdir(), "grok-desktop-launch");
 
 fs.mkdirSync(scratch, { recursive: true });
 
@@ -44,9 +45,9 @@ const surface = {
   threadsSidebar: appSrc.includes('data-testid="threads-sidebar"'),
   chatPanel: appSrc.includes('data-testid="chat-panel"'),
   composer: appSrc.includes('data-testid="composer"'),
-  dirToggle: appSrc.includes('data-testid="dir-toggle"'),
+  directionAware: appSrc.includes('shellDocumentAttrs') && appSrc.includes('detectTextDirection'),
   sessionResume: appSrc.includes('resumeSession'),
-  permissionModal: appSrc.includes('PermissionModal'),
+  permissionPrompt: appSrc.includes('PermissionPrompt'),
 };
 
 // Exercise shipped modules

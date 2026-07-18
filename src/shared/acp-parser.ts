@@ -35,11 +35,27 @@ export function __resetParserIds(): void {
   idCounter = 0;
 }
 
-function extractText(content: AcpSessionUpdate["content"]): string {
+function extractText(content: unknown): string {
   if (!content) return "";
   if (typeof content === "string") return content;
-  if (typeof content === "object" && content !== null && "text" in content) {
-    return String((content as { text?: string }).text ?? "");
+  if (Array.isArray(content)) {
+    return content.map(extractText).filter(Boolean).join("\n");
+  }
+  if (typeof content === "object" && content !== null) {
+    const row = content as Record<string, unknown>;
+    if (typeof row.text === "string") return row.text;
+    for (const key of [
+      "output_for_prompt",
+      "tool_output_for_prompt_concise",
+      "tool_output_for_prompt",
+      "content_concise",
+      "stdout",
+      "stderr",
+      "content",
+    ]) {
+      const text = extractText(row[key]);
+      if (text) return text;
+    }
   }
   return "";
 }
@@ -254,9 +270,7 @@ export function parseSessionUpdate(
         text:
           typeof body.rawOutput === "string"
             ? body.rawOutput
-            : typeof (body as { content?: { text?: string } }).content?.text === "string"
-              ? (body as { content: { text: string } }).content.text
-              : undefined,
+            : extractText(body.content) || extractText(body.rawOutput) || undefined,
         raw: body,
       });
       break;

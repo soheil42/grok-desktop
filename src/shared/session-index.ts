@@ -65,6 +65,9 @@ type SummaryJson = {
 
 type SignalsJson = {
   contextTokensUsed?: number;
+  contextWindowTokens?: number;
+  contextWindowUsage?: number;
+  compactionCount?: number;
   sessionDurationSeconds?: number;
   totalTokensBeforeCompaction?: number;
 };
@@ -111,7 +114,7 @@ function readSummary(sessionDir: string): SessionSummary | null {
     const title =
       data.generated_title ||
       data.session_summary ||
-      `Session ${id.slice(0, 8)}`;
+      "Untitled chat";
     return {
       id,
       cwd,
@@ -234,12 +237,20 @@ export function listSessionsInGroup(
 
       let tokensUsed = 0;
       let durationSeconds = 0;
+      let contextWindowTokens = 0;
+      let contextWindowUsage = 0;
+      let compactionCount = 0;
+      let totalTokensBeforeCompaction = 0;
       const signalsPath = path.join(sessionDir, "signals.json");
       if (io.existsSync(signalsPath)) {
         try {
           const sig = JSON.parse(io.readFileSync(signalsPath, "utf8")) as SignalsJson;
           tokensUsed = Number(sig.contextTokensUsed || 0) || 0;
           durationSeconds = Number(sig.sessionDurationSeconds || 0) || 0;
+          contextWindowTokens = Number(sig.contextWindowTokens || 0) || 0;
+          contextWindowUsage = Number(sig.contextWindowUsage || 0) || 0;
+          compactionCount = Number(sig.compactionCount || 0) || 0;
+          totalTokensBeforeCompaction = Number(sig.totalTokensBeforeCompaction || 0) || 0;
         } catch {
           // ignore bad signals
         }
@@ -251,7 +262,7 @@ export function listSessionsInGroup(
       sessions.push({
         id,
         cwd,
-        title: data.generated_title || data.session_summary || `Session ${id.slice(0, 8)}`,
+        title: data.generated_title || data.session_summary || "Untitled chat",
         createdAt: data.created_at ?? null,
         updatedAt,
         modelId: data.current_model_id ?? null,
@@ -260,6 +271,10 @@ export function listSessionsInGroup(
         path: sessionDir,
         tokensUsed,
         durationSeconds,
+        contextWindowTokens,
+        contextWindowUsage,
+        compactionCount,
+        totalTokensBeforeCompaction,
       });
     } catch {
       continue;

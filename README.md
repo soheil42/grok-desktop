@@ -14,7 +14,15 @@ curl -fsSL https://x.ai/cli/install.sh | bash
 grok login
 ```
 
-## Install (macOS)
+## Install
+
+Download the package for your platform from [Releases](../../releases):
+
+- macOS: `.dmg` (Apple Silicon)
+- Windows: NSIS installer or portable `.exe`
+- Linux: `.AppImage`
+
+### macOS
 
 1. Download the latest **`.dmg`** from [Releases](../../releases)
 2. Open the DMG → drag **Grok Desktop** to Applications
@@ -48,11 +56,14 @@ npm run dist:mac
 
 | Action | How |
 |--------|-----|
-| Open project | **Open** in sidebar |
+| Open project | Folder button in the sidebar |
 | New chat | **+ New chat** (won't spam empty drafts) |
-| Delete chat | Hover row → **×** (removes session + subagents on disk) |
+| Conversation actions | Hover or right-click a chat → **•••** |
+| Project actions | Hover or right-click a project → **•••** |
 | Agent mode | **Shift+Tab** → Agent / Plan / Auto |
-| Send | **⌘/Ctrl + Enter** or **↑** |
+| Send / newline | **Enter** sends, **Shift+Enter** inserts a newline |
+| Stop | Click the stop control or press **Esc** |
+| Commands | Type **/** in the composer |
 
 Auth uses `~/.grok/auth.json` from `grok login` (or `XAI_API_KEY`).
 

@@ -50,7 +50,12 @@ export function filterVisibleStreamItems(
     if (item.kind === "user") {
       const cleaned = sanitizeUserMessageText(item.text);
       if (!cleaned) continue; // pure system-reminder → hide
-      if (!cleaned.text.trim() && !(cleaned.images.length > 0) && !item.images?.length) {
+      if (
+        !cleaned.text.trim() &&
+        !(cleaned.images.length > 0) &&
+        !item.images?.length &&
+        !item.attachments?.length
+      ) {
         continue;
       }
       out.push({

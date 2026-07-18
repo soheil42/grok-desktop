@@ -54,4 +54,37 @@ describe("buildToolPreview", () => {
       expect(p.content).not.toMatch(/1→/);
     }
   });
+
+  it("renders nested command results instead of an empty preview", () => {
+    const p = buildToolPreview(
+      item({
+        id: "3",
+        kind: "tool_result",
+        title: "Execute `npm test`",
+        toolName: "execute",
+        input: { command: "npm test" },
+        output: {
+          type: "Bash",
+          output: [98, 121, 116, 101, 115],
+          output_for_prompt: "exit: 0\n12 tests passed",
+        },
+      }),
+    );
+    expect(p.kind).toBe("shell");
+    if (p.kind === "shell") expect(p.output).toContain("12 tests passed");
+  });
+
+  it("includes the applied result beneath an edit diff", () => {
+    const p = buildToolPreview(
+      item({
+        id: "4",
+        kind: "tool_result",
+        toolName: "edit",
+        input: { file_path: "a.ts", old_string: "old", new_string: "new" },
+        output: { output_for_prompt: "Applied edit successfully" },
+      }),
+    );
+    expect(p.kind).toBe("diff");
+    if (p.kind === "diff") expect(p.result).toContain("Applied edit");
+  });
 });

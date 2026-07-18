@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import type { AgentSessionSettings, PromptAttachment } from "../shared/types.js";
 
 export type DesktopApi = {
   getBootstrap: () => Promise<{
@@ -38,13 +39,14 @@ export type DesktopApi = {
     cwd: string;
     sessionId?: string;
     alwaysApprove?: boolean;
-  }) => Promise<{ sessionId: string }>;
+  }) => Promise<{ sessionId: string; settings?: AgentSessionSettings }>;
   prompt: (payload: {
     threadId: string;
     text: string;
     sessionId?: string;
+    attachments?: PromptAttachment[];
   }) => Promise<unknown>;
-  cancel: (payload: { threadId: string }) => Promise<unknown>;
+  cancel: (payload: { threadId: string; sessionId?: string }) => Promise<unknown>;
   respondPermission: (payload: {
     threadId: string;
     requestId: string | number;
@@ -84,6 +86,23 @@ export type DesktopApi = {
     mode: "agent" | "plan" | "auto";
     sessionId?: string;
   }) => Promise<{ ok: boolean; modeId?: string; alwaysApprove?: boolean }>;
+  setModel: (payload: {
+    threadId: string;
+    sessionId?: string;
+    modelId: string;
+  }) => Promise<{ ok: boolean; settings?: AgentSessionSettings }>;
+  setConfigOption: (payload: {
+    threadId: string;
+    sessionId?: string;
+    optionId: string;
+    value: string;
+  }) => Promise<{ ok: boolean; settings?: AgentSessionSettings }>;
+  setReasoningEffort: (payload: {
+    threadId: string;
+    sessionId?: string;
+    effort: string;
+    alwaysApprove?: boolean;
+  }) => Promise<{ ok: boolean; settings?: AgentSessionSettings }>;
   listRewindPoints: (payload: {
     threadId: string;
     sessionId?: string;
@@ -151,6 +170,10 @@ const api: DesktopApi = {
   readPlan: (payload) => ipcRenderer.invoke("sessions:read-plan", payload),
   disposeAgent: (threadId) => ipcRenderer.invoke("agent:dispose", threadId),
   setAgentMode: (payload) => ipcRenderer.invoke("agent:set-mode", payload),
+  setModel: (payload) => ipcRenderer.invoke("agent:set-model", payload),
+  setConfigOption: (payload) => ipcRenderer.invoke("agent:set-config-option", payload),
+  setReasoningEffort: (payload) =>
+    ipcRenderer.invoke("agent:set-reasoning-effort", payload),
   listRewindPoints: (payload) =>
     ipcRenderer.invoke("agent:rewind-points", payload),
   executeRewind: (payload) => ipcRenderer.invoke("agent:rewind-execute", payload),
@@ -166,6 +189,7 @@ const api: DesktopApi = {
       "agent:user-questions",
       "agent:error",
       "agent:log",
+      "agent:settings",
       "agent:exit",
     ]);
     if (!allowed.has(channel)) {

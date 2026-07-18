@@ -47,6 +47,11 @@ export type SessionSummary = {
   /** From signals.json when present */
   tokensUsed?: number;
   durationSeconds?: number;
+  /** Live session context counters persisted by Grok CLI in signals.json. */
+  contextWindowTokens?: number;
+  contextWindowUsage?: number;
+  compactionCount?: number;
+  totalTokensBeforeCompaction?: number;
 };
 
 export type StreamItemKind =
@@ -78,6 +83,63 @@ export type MessageImage = {
   dataUrl?: string;
 };
 
+/** Serialized clipboard attachment passed across the context-isolated IPC bridge. */
+export type PromptAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  dataUrl: string;
+};
+
+export type MessageAttachment = {
+  name: string;
+  mimeType?: string;
+  size?: number;
+  path?: string;
+};
+
+export type AgentModelOption = {
+  id: string;
+  name: string;
+  description?: string;
+  /** False for a catalog entry that the active Grok session has not advertised. */
+  available?: boolean;
+  /** Capabilities reported for this model by Grok ACP. */
+  totalContextTokens?: number;
+  supportsReasoningEffort?: boolean;
+  reasoningEffort?: string;
+  reasoningEfforts?: AgentConfigChoice[];
+};
+
+export type AgentConfigChoice = {
+  value: string;
+  name: string;
+  description?: string;
+};
+
+export type AgentConfigOption = {
+  id: string;
+  name: string;
+  currentValue?: string;
+  choices: AgentConfigChoice[];
+};
+
+/** Slash command reported by the running Grok CLI over ACP. */
+export type AgentCommandOption = {
+  name: string;
+  description: string;
+  inputHint?: string;
+};
+
+export type AgentSessionSettings = {
+  currentModelId?: string;
+  reasoningEffort?: string;
+  models: AgentModelOption[];
+  configOptions: AgentConfigOption[];
+  availableCommands: AgentCommandOption[];
+};
+
 export type StreamItem = {
   id: string;
   kind: StreamItemKind;
@@ -93,6 +155,8 @@ export type StreamItem = {
   raw?: unknown;
   /** Attached images for user messages — shown above the bubble */
   images?: MessageImage[];
+  /** Non-image files included with a user prompt. */
+  attachments?: MessageAttachment[];
 };
 
 export type PermissionRequest = {
@@ -152,4 +216,3 @@ export type ThreadState = {
   modelId: string | null;
   error: string | null;
 };
-

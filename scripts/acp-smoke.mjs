@@ -7,6 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -14,7 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const scratch =
   process.env.GROK_SCRATCH ||
-  "/var/folders/c4/yxvvqlsn2sz9pyd2yr9jnsrw0000gn/T/grok-goal-f032dfe1736f/implementer";
+  path.join(os.tmpdir(), "grok-desktop-acp-smoke");
 
 fs.mkdirSync(scratch, { recursive: true });
 

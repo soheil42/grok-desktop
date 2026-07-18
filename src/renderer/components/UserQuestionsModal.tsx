@@ -6,6 +6,7 @@ import {
   type UserQuestionNotes,
   type UserQuestionRequest,
 } from "@shared/user-questions";
+import { detectTextDirection } from "@shared/rtl";
 
 type Props = {
   request: UserQuestionRequest;
@@ -100,8 +101,17 @@ export function UserQuestionsModal({ request, onSubmit, onSkip }: Props) {
               <p>Waiting for Grok to send the question list…</p>
             </div>
           ) : (
-            questions.map((q, qi) => (
-              <section key={q.id} className="q-block" data-testid={`question-${qi}`}>
+            questions.map((q, qi) => {
+              const qDir = detectTextDirection(
+                [q.question, ...q.options.flatMap((option) => [option.label, option.description || ""])].join(" "),
+              );
+              return (
+              <section
+                key={q.id}
+                className={`q-block ${qDir === "rtl" ? "is-rtl" : "is-ltr"}`}
+                dir={qDir === "rtl" ? "rtl" : "ltr"}
+                data-testid={`question-${qi}`}
+              >
                 <h3 className="q-title">
                   <span className="q-num">{qi + 1}</span>
                   {q.question}
@@ -189,7 +199,8 @@ export function UserQuestionsModal({ request, onSubmit, onSkip }: Props) {
                   </>
                 )}
               </section>
-            ))
+              );
+            })
           )}
         </div>
 

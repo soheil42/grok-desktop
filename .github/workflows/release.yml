@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (for example v1.0.2)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-14
+            command: npm run build && npx electron-builder --mac --arm64
+            artifact: macos-arm64
+            files: |
+              release/*.dmg
+              release/*-mac.zip
+          - name: Windows x64
+            os: windows-2022
+            command: npm run dist:win
+            artifact: windows-x64
+            files: |
+              release/*.exe
+          - name: Linux x64
+            os: ubuntu-22.04
+            command: npm run dist:linux
+            artifact: linux-x64
+            files: |
+              release/*.AppImage
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: node -e "const v=require('./package.json').version; if ('v'+v !== process.env.RELEASE_TAG) throw new Error('package version '+v+' does not match '+process.env.RELEASE_TAG)"
+
+      - name: Verify source
+        run: npm run typecheck && npm test && npm run verify:structure
+
+      - name: Build installers
+        run: ${{ matrix.command }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          mapfile -d '' files < <(find artifacts -type f -print0)
+          gh release create "$TAG" "${files[@]}" \
+            --title "Grok Desktop ${TAG#v}" \
+            --generate-notes \
+            --verify-tag

@@ -4,7 +4,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { createRoot } from "react-dom/client";
 import { act } from "react";
-import App from "../App";
+import App, { clipboardFilesToAttachments, shouldSendComposerKey } from "../App";
 
 function mount(): HTMLDivElement {
   const el = document.createElement("div");
@@ -66,5 +66,23 @@ describe("App shell mount", () => {
     expect(shell.getAttribute("dir")).toMatch(/^(ltr|rtl)$/);
 
     root.unmount();
+  });
+});
+
+describe("composer keyboard behavior", () => {
+  it("sends on Enter and keeps Shift+Enter for a new line", () => {
+    expect(shouldSendComposerKey("Enter", false)).toBe(true);
+    expect(shouldSendComposerKey("Enter", true)).toBe(false);
+    expect(shouldSendComposerKey("Enter", false, true)).toBe(false);
+    expect(shouldSendComposerKey("a", false)).toBe(false);
+  });
+
+  it("serializes pasted files for the context-isolated prompt bridge", async () => {
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    const [attachment] = await clipboardFilesToAttachments([file]);
+    expect(attachment.name).toBe("notes.txt");
+    expect(attachment.mimeType).toBe("text/plain");
+    expect(attachment.size).toBe(5);
+    expect(attachment.dataUrl).toMatch(/^data:text\/plain;base64,/);
   });
 });

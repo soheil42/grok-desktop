@@ -53,6 +53,23 @@ describe("parseSessionUpdate", () => {
     expect(update.items[0].output).toBe("ok");
   });
 
+  it("extracts nested ACP content and prompt output from tool results", () => {
+    const update = parseSessionUpdate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "nested",
+      status: "completed",
+      content: [
+        { type: "content", content: { type: "text", text: "command output" } },
+      ],
+      rawOutput: {
+        type: "Bash",
+        output: [99, 111, 100, 101],
+        output_for_prompt: "exit: 0\ncommand output",
+      },
+    } as never);
+    expect(update.items[0].text).toBe("command output");
+  });
+
   it("unwraps nested update payloads from Grok wrappers", () => {
     const batch = parseSessionUpdate({
       update: {

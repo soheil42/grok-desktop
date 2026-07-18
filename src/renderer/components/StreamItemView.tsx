@@ -14,6 +14,16 @@ import {
 
 type Mode = "clean" | "transparent" | "audit";
 
+function markdownRevision(text: string): string {
+  // Small deterministic hash: keys stay compact even for long agent replies.
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${text.length}:${hash >>> 0}`;
+}
+
 const mdComponents = (isRtl: boolean) => ({
   p: ({ children: c }: { children?: ReactNode }) => (
     <p className={isRtl ? "md-prose-rtl" : undefined}>{c}</p>
@@ -159,8 +169,15 @@ function Md({ children }: { children: string }) {
   const isRtl = dir === "rtl";
   const comps = mdComponents(isRtl);
 
+  // ReactMarkdown changes its DOM shape as an incomplete stream becomes valid
+  // Markdown (paragraph -> heading, raw pipes -> table, open -> closed fence).
+  // Remount that tree for every source revision. This avoids stale reconciled
+  // DOM/Chromium paint that previously corrected itself only after reopening.
+  const sourceRevision = markdownRevision(children);
+
   return (
     <div
+      key={sourceRevision}
       className={`md ${isRtl ? "md-rtl" : dir === "ltr" ? "md-ltr" : "md-auto"}`}
       lang={isRtl ? "fa" : undefined}
     >
@@ -334,6 +351,7 @@ function ToolBody({ item, audit }: { item: StreamItem; audit?: boolean }) {
     return (
       <div className="tool-body tool-body-pretty">
         <DiffLines path={preview.path} oldText={preview.oldText} newText={preview.newText} />
+        {preview.result && <pre className="code-font tool-result">{preview.result}</pre>}
       </div>
     );
   }
@@ -427,22 +445,27 @@ function SingleTool({
   audit,
   defaultOpen,
   isHistory,
+  isLive,
 }: {
   item: StreamItem;
   audit?: boolean;
   defaultOpen?: boolean;
   isHistory?: boolean;
+  isLive?: boolean;
 }) {
-  const [open, setOpen] = useState(Boolean(defaultOpen) && !isHistory);
+  const preview = buildToolPreview(item);
+  const hasPreview = preview.kind !== "empty" || Boolean(audit && item.raw != null);
+  const [open, setOpen] = useState(Boolean(defaultOpen) && !isHistory && hasPreview);
   const label = toolShortLabel(item);
   const isAsk =
     /ask\s+\d+\s+questions?|ask_user_question/i.test(item.title || "") ||
     /ask_user_question/i.test(String(item.toolName || ""));
   return (
-    <div className={`tl-tool ${isHistory ? "" : "anim-in"}`.trim()}>
+    <div className={`tl-tool ${isHistory ? "" : "anim-in"} ${isLive ? "is-live" : ""}`.trim()}>
       <button
         type="button"
-        className={`tool-chip ${isAsk ? "ask" : ""}`}
+        className={`tool-chip ${isAsk ? "ask" : ""} ${!hasPreview && !isAsk ? "no-preview" : ""}`.trim()}
+        disabled={!hasPreview && !isAsk}
         onClick={() => {
           // Re-open question modal if this is a stuck ask_user_question tool
           if (isAsk && typeof window !== "undefined" && window.grokDesktop) {
@@ -457,14 +480,14 @@ function SingleTool({
               // ignore
             }
           }
-          setOpen((v) => !v);
+          if (hasPreview) setOpen((v) => !v);
         }}
       >
         <StatusDot status={item.status} />
         <span className="tool-chip-text">{label}</span>
-        <span className="caret">{open ? "▾" : "▸"}</span>
+        {(hasPreview || isAsk) && <span className="caret">{open ? "▾" : "▸"}</span>}
       </button>
-      {open && <ToolBody item={item} audit={audit} />}
+      {open && hasPreview && <ToolBody item={item} audit={audit} />}
     </div>
   );
 }
@@ -473,14 +496,16 @@ function ToolGroupView({
   entry,
   audit,
   isHistory,
+  isLive,
 }: {
   entry: Extract<TimelineEntry, { type: "tool_group" }>;
   audit?: boolean;
   isHistory?: boolean;
+  isLive?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className={`tl-tool-group ${isHistory ? "" : "anim-in"}`.trim()}>
+    <div className={`tl-tool-group ${isHistory ? "" : "anim-in"} ${isLive ? "is-live" : ""}`.trim()}>
       <button type="button" className="tool-chip group" onClick={() => setOpen((v) => !v)}>
         <StatusDot status={entry.status} />
         <span className="tool-chip-text">{entry.label}</span>
@@ -554,26 +579,44 @@ export function TimelineEntryView({
   mode = "clean",
   audit,
   isHistory,
+  isLive,
 }: {
   entry: TimelineEntry;
   mode?: Mode;
   audit?: boolean;
   /** History batch — no enter animations (prevents "messages pouring in" freeze). */
   isHistory?: boolean;
+  /** Last entry of an active turn — receives Codex-style running treatment. */
+  isLive?: boolean;
 }) {
   const wrap = (node: ReactNode) =>
     isHistory ? <div className="hist-item">{node}</div> : node;
 
   if (entry.type === "tool_group") {
     return wrap(
-      <ToolGroupView entry={entry} audit={audit || mode === "audit"} isHistory />,
+      <ToolGroupView
+        entry={entry}
+        audit={audit || mode === "audit"}
+        isHistory={isHistory}
+        isLive={isLive}
+      />,
     );
   }
   if (entry.type === "thought_group") {
-    return wrap(<ThoughtGroup text={entry.text} isHistory />);
+    return wrap(
+      <div className={isLive ? "is-live" : undefined}>
+        <ThoughtGroup text={entry.text} isHistory={isHistory} />
+      </div>,
+    );
   }
   return wrap(
-    <StreamItemView item={entry.item} mode={mode} audit={audit} isHistory />,
+    <StreamItemView
+      item={entry.item}
+      mode={mode}
+      audit={audit}
+      isHistory={isHistory}
+      isLive={isLive}
+    />,
   );
 }
 
@@ -582,11 +625,13 @@ export function StreamItemView({
   audit,
   mode = "clean",
   isHistory,
+  isLive,
 }: {
   item: StreamItem;
   audit?: boolean;
   mode?: Mode;
   isHistory?: boolean;
+  isLive?: boolean;
 }): ReactNode {
   const anim = isHistory ? "" : "anim-in";
 
@@ -615,7 +660,7 @@ export function StreamItemView({
     });
 
     if (!parsed.text.trim() && uniqueImages.length === 0) {
-      return null;
+      if (!item.attachments?.length) return null;
     }
 
     const dir = detectTextDirection(parsed.text || "");
@@ -629,7 +674,7 @@ export function StreamItemView({
         data-item-id={item.id}
       >
         <div className="msg-label">
-          <span>You</span>
+          <span className="msg-label-name">You</span>
           <span className="msg-actions">
             <button
               type="button"
@@ -662,6 +707,16 @@ export function StreamItemView({
           </span>
         </div>
         {uniqueImages.length > 0 && <ImageGallery images={uniqueImages} />}
+        {item.attachments && item.attachments.length > 0 && (
+          <div className="message-files">
+            {item.attachments.map((attachment, index) => (
+              <div className="message-file" key={`${attachment.name}-${index}`}>
+                <span aria-hidden>⌑</span>
+                <span>{attachment.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {parsed.text.trim() ? (
           <div className={`msg-bubble user ${dir === "rtl" ? "is-rtl-prose" : ""}`}>
             <Md>{parsed.text}</Md>
@@ -682,7 +737,9 @@ export function StreamItemView({
         data-dir={dir}
       >
         <div className="msg-label">
-          <span className="grok-dot" /> Grok
+          <span className="msg-label-name">
+            <span className="grok-dot" /> Grok
+          </span>
         </div>
         {/*
           Do not set dir=rtl on the bubble wrapper — it reorders markdown
@@ -697,7 +754,11 @@ export function StreamItemView({
   }
 
   if (item.kind === "thought") {
-    return <ThoughtGroup text={item.text || ""} isHistory={isHistory} />;
+    return (
+      <div className={isLive ? "is-live" : undefined}>
+        <ThoughtGroup text={item.text || ""} isHistory={isHistory} />
+      </div>
+    );
   }
 
   if (item.kind === "plan") {
@@ -717,6 +778,7 @@ export function StreamItemView({
         audit={audit || mode === "audit"}
         defaultOpen={mode === "transparent" && !isHistory}
         isHistory={isHistory}
+        isLive={isLive}
       />
     );
   }

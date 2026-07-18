@@ -4,37 +4,72 @@
  * as plain paragraphs, then bidi reorders the pipes into gibberish.
  */
 
-/** Join two consecutive agent_text chunks without gluing fence/table to the next turn. */
+/**
+ * Join ACP agent-message deltas.
+ *
+ * Chunk boundaries are transport details: a `|`, `#`, or backtick may arrive
+ * in any chunk. Inferring Markdown structure here corrupts the source and made
+ * live text differ from the same message loaded from disk. Message/turn
+ * separation belongs in the stream timeline, not in the text concatenator.
+ */
 export function joinAgentTextChunks(prev: string, next: string): string {
   if (!prev) return next;
   if (!next) return prev;
 
-  // Stream continuation inside an open fence — always concatenate raw
-  if (countFenceMarkers(prev) % 2 === 1) {
+  // If Grok preserved whitespace, it is authoritative.
+  if (/\s$/.test(prev) || /^\s/.test(next)) return prev + next;
+
+  // Never infer prose structure while a fenced code block is open.
+  if (countFenceMarkers(prev) % 2 === 1) return prev + next;
+
+  const prevLine = prev.slice(prev.lastIndexOf("\n") + 1).trim();
+  const nextLine = next.split("\n", 1)[0].trim();
+
+  // The transport may split a table row at one of its internal pipes. If the
+  // current row has not closed yet, the next pipe is continuation, not a row.
+  if (prevLine.startsWith("|") && !prevLine.endsWith("|")) {
     return prev + next;
   }
 
-  // Closed fence immediately followed by prose (missing blank line between turns)
-  if (/```\s*$/.test(prev.trimEnd()) && !next.startsWith("\n") && !next.startsWith("```")) {
-    return prev.replace(/\s*$/, "") + "\n\n" + next;
+  const tableRow = /^\|.*\|$/.test(nextLine) && (nextLine.match(/\|/g) || []).length >= 2;
+  const listItem = /^(?:[-+*]|\d+[.)])\s+\S/.test(nextLine);
+  const heading = /^#{1,6}\s+\S/.test(nextLine);
+  const blockquote = /^>\s+\S/.test(nextLine);
+  const fence = /^```/.test(nextLine);
+  const rule = /^(?:-{3,}|\*{3,}|_{3,})$/.test(nextLine);
+
+  // Grok's live ACP stream sometimes trims separators between semantic blocks,
+  // while updates.jsonl stores the final message with those newlines restored.
+  // Repair only complete Markdown block starts, never a lone transport token.
+  if (tableRow || listItem || blockquote) {
+    return `${prev}\n${next}`;
+  }
+  if (heading || fence || rule || /^```\s*$/.test(prevLine)) {
+    return `${prev}\n\n${next}`;
   }
 
-  // Table row glued to previous paragraph without newline
-  if (!prev.endsWith("\n") && /^\|/.test(next)) {
-    return prev + "\n" + next;
-  }
-
-  // Heading glued without newline
-  if (!prev.endsWith("\n") && /^#{1,6}\s/.test(next)) {
-    return prev + "\n\n" + next;
+  // A heading chunk followed by prose, or a completed sentence followed by a
+  // substantial new prose chunk, is another observed whitespace-loss shape.
+  const prevIsHeading = /^#{1,6}\s+\S/.test(prevLine);
+  const hasOpenInlineMarkup =
+    (prevLine.match(/\*\*/g) || []).length % 2 === 1 ||
+    (prevLine.match(/(?<!`)`(?!`)/g) || []).length % 2 === 1;
+  const nextLooksLikeProse =
+    nextLine.length >= 4 &&
+    /^(?:[A-Z\d]|[\u0600-\u06ff])/.test(nextLine);
+  if (
+    !hasOpenInlineMarkup &&
+    nextLooksLikeProse &&
+    (prevIsHeading || /[.!?؟:؛]$/.test(prevLine))
+  ) {
+    return `${prev}\n\n${next}`;
   }
 
   return prev + next;
 }
 
 function countFenceMarkers(text: string): number {
-  const raw = text.match(/```/g);
-  return raw ? raw.length : 0;
+  return (text.match(/```/g) || []).length;
 }
 
 export type MdTableAlign = "left" | "center" | "right" | "default";
@@ -53,7 +88,7 @@ export type MdSegment =
  */
 export function normalizeMarkdownForRender(src: string): string {
   if (!src) return src;
-  let text = src;
+  let text = repairCollapsedMarkdownBlocks(src);
 
   // Normalize exotic pipes/dashes often seen in Persian exports
   text = text
@@ -84,17 +119,47 @@ export function normalizeMarkdownForRender(src: string): string {
     text = out.join("\n");
   }
 
-  // Close dangling fence so following prose still renders while streaming
-  const ticks = text.match(/```/g);
-  if (ticks && ticks.length % 2 === 1) {
-    text = text + "\n```";
+  return text;
+}
+
+/** Repair block separators trimmed by Grok's live ACP transport. */
+export function repairCollapsedMarkdownBlocks(src: string): string {
+  const lines = src.split("\n");
+  const out: string[] = [];
+  let inFence = false;
+
+  for (const original of lines) {
+    const fenceCount = (original.match(/```/g) || []).length;
+    if (inFence) {
+      out.push(original);
+      if (fenceCount % 2 === 1) inFence = false;
+      continue;
+    }
+    if (/^\s*```/.test(original)) {
+      out.push(original);
+      if (fenceCount % 2 === 1) inFence = true;
+      continue;
+    }
+
+    let line = original;
+    // `paragraph### Heading` and `---## Heading` cannot be intentional prose.
+    line = line.replace(/([^\n#])(?=#{1,6}\s+\S)/g, "$1\n\n");
+    line = line.replace(/((?:^|\s)(?:---|\*\*\*|___))(?=#{1,6}\s+\S)/g, "$1\n\n");
+
+    // A collapsed GFM table keeps both the closing and opening row pipes,
+    // producing `| |` or `||`. Scope this to lines containing a separator row
+    // so boolean operators and ordinary prose remain untouched.
+    if (/\|\s*:?-{2,}:?\s*\|/.test(line)) {
+      let previous = "";
+      while (previous !== line) {
+        previous = line;
+        line = line.replace(/\|[ \t]*\|/g, "|\n|");
+      }
+    }
+    out.push(line);
   }
 
-  // Close dangling bold that would eat the rest of the message
-  const boldCount = (text.match(/\*\*/g) || []).length;
-  if (boldCount % 2 === 1) text = text + "**";
-
-  return text;
+  return out.join("\n");
 }
 
 function isPipeRow(line: string): boolean {

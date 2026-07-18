@@ -39,6 +39,7 @@ import {
 import type {
   AuthStatus,
   PermissionRequest,
+  PromptAttachment,
   StreamItem,
 } from "../shared/types.js";
 import { preserveJsonRpcId } from "../shared/types.js";
@@ -54,10 +55,54 @@ type ThreadBinding = {
   sessionId: string | null;
   cwd: string;
   windowId: number;
+  reasoningEffort?: string;
 };
 
 const bindings = new Map<string, ThreadBinding>();
 let mainWindow: BrowserWindow | null = null;
+
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACHMENTS = 10;
+
+function safeAttachmentName(name: string): string {
+  const cleaned = path.basename(name || "attachment").replace(/[^\p{L}\p{N}._ -]/gu, "_");
+  return cleaned.slice(0, 120) || "attachment";
+}
+
+function preparePromptAttachments(
+  threadId: string,
+  attachments: PromptAttachment[] = [],
+): { paths: string[]; images: Array<{ data: string; mimeType: string }> } {
+  const paths: string[] = [];
+  const images: Array<{ data: string; mimeType: string }> = [];
+  if (!attachments.length) return { paths, images };
+
+  const dir = path.join(
+    app.getPath("temp"),
+    "grok-desktop-attachments",
+    safeAttachmentName(threadId),
+    String(Date.now()),
+  );
+  fs.mkdirSync(dir, { recursive: true });
+
+  for (const attachment of attachments.slice(0, MAX_ATTACHMENTS)) {
+    const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(
+      attachment.dataUrl || "",
+    );
+    if (!match) throw new Error(`Invalid clipboard attachment: ${attachment.name}`);
+    const mimeType = attachment.mimeType || match[1] || "application/octet-stream";
+    const data = match[2].replace(/\s/g, "");
+    const buffer = Buffer.from(data, "base64");
+    if (buffer.byteLength > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`${attachment.name} is larger than 20 MB`);
+    }
+    const filePath = path.join(dir, safeAttachmentName(attachment.name));
+    fs.writeFileSync(filePath, buffer);
+    paths.push(filePath);
+    if (mimeType.startsWith("image/")) images.push({ data, mimeType });
+  }
+  return { paths, images };
+}
 
 const DEFAULT_WINDOW = {
   width: 1440,
@@ -239,6 +284,15 @@ function createWindow(): BrowserWindow {
 
   trackWindowState(win);
 
+  // Reload shortcuts make a packaged desktop session feel like a web page and
+  // can discard live streaming state. Keep DevTools available, but block both
+  // Command/Ctrl+R and their Shift variants at the webContents boundary.
+  win.webContents.on("before-input-event", (event, input) => {
+    if ((input.meta || input.control) && input.key.toLowerCase() === "r") {
+      event.preventDefault();
+    }
+  });
+
   win.once("ready-to-show", () => {
     // Re-apply dock icon when window shows (dev `electron .` often resets it)
     applyAppIcon();
@@ -297,10 +351,14 @@ async function ensureClient(
   threadId: string,
   cwd: string,
   win: BrowserWindow,
-  opts?: { alwaysApprove?: boolean },
+  opts?: {
+    alwaysApprove?: boolean;
+    reasoningEffort?: string;
+    forceRestart?: boolean;
+  },
 ): Promise<ThreadBinding> {
   let binding = bindings.get(threadId);
-  if (binding?.client.isRunning) {
+  if (binding?.client.isRunning && !opts?.forceRestart) {
     return binding;
   }
   if (binding) {
@@ -313,9 +371,16 @@ async function ensureClient(
     binary: process.env.GROK_BINARY || undefined,
     // never bake always-approve into the process — use setAlwaysApprove after start
     alwaysApprove: false,
+    reasoningEffort: opts?.reasoningEffort,
   });
 
-  binding = { client, sessionId: null, cwd, windowId: win.id };
+  binding = {
+    client,
+    sessionId: null,
+    cwd,
+    windowId: win.id,
+    reasoningEffort: opts?.reasoningEffort,
+  };
   bindings.set(threadId, binding);
 
   client.on("update", (u) => {
@@ -363,6 +428,10 @@ async function ensureClient(
 
   client.on("log", (line: string) => {
     sendToThreadWindow(threadId, "agent:log", { line });
+  });
+
+  client.on("settings", (settings) => {
+    sendToThreadWindow(threadId, "agent:settings", { settings });
   });
 
   client.on("exit", (code) => {
@@ -548,9 +617,86 @@ function registerIpc(): void {
       } else {
         await binding.client.setSessionMode("default", sessionId);
       }
-      return { sessionId };
+      return { sessionId, settings: binding.client.settings };
     },
   );
+
+  ipcMain.handle("agent:set-model", async (_e, payload: {
+    threadId: string;
+    sessionId?: string;
+    modelId: string;
+  }) => {
+    const binding = bindings.get(payload.threadId);
+    if (!binding) throw new Error("No agent");
+    const selected = binding.client.settings.models.find(
+      (model) => model.id === payload.modelId,
+    );
+    if (!selected) throw new Error(`Model is not advertised by Grok: ${payload.modelId}`);
+    if (selected.available === false) {
+      throw new Error(`${selected.name} is not available in this Grok session`);
+    }
+    // The binding is the source of truth for the currently loaded session.
+    // A renderer payload can briefly lag after resume/fork.
+    await binding.client.setSessionModel(
+      selected.id,
+      binding.sessionId || payload.sessionId || undefined,
+    );
+    return { ok: true, settings: binding.client.settings };
+  });
+
+  ipcMain.handle("agent:set-config-option", async (_e, payload: {
+    threadId: string;
+    sessionId?: string;
+    optionId: string;
+    value: string;
+  }) => {
+    const binding = bindings.get(payload.threadId);
+    if (!binding) throw new Error("No agent");
+    await binding.client.setSessionConfigOption(
+      payload.optionId,
+      payload.value,
+      payload.sessionId || binding.sessionId || undefined,
+    );
+    return { ok: true, settings: binding.client.settings };
+  });
+
+  ipcMain.handle("agent:set-reasoning-effort", async (event, payload: {
+    threadId: string;
+    sessionId?: string;
+    effort: string;
+    alwaysApprove?: boolean;
+  }) => {
+    const previous = bindings.get(payload.threadId);
+    if (!previous) throw new Error("No agent");
+    const selectedModel = previous.client.settings.models.find(
+      (model) => model.id === previous.client.settings.currentModelId,
+    );
+    const supported = selectedModel?.reasoningEfforts?.map((choice) => choice.value) || [];
+    if (!selectedModel?.supportsReasoningEffort || !supported.includes(payload.effort)) {
+      throw new Error(
+        `${selectedModel?.name || "Current model"} does not advertise ${payload.effort} reasoning effort`,
+      );
+    }
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win) throw new Error("No window");
+    const sessionId = previous.sessionId || payload.sessionId || undefined;
+    const binding = await ensureClient(payload.threadId, previous.cwd, win, {
+      alwaysApprove: payload.alwaysApprove,
+      reasoningEffort: payload.effort,
+      forceRestart: true,
+    });
+    if (sessionId) {
+      binding.sessionId = await binding.client.loadSession(sessionId, previous.cwd);
+    } else {
+      binding.sessionId = await binding.client.newSession(previous.cwd);
+    }
+    binding.client.setAlwaysApprove(Boolean(payload.alwaysApprove));
+    await binding.client.setSessionMode(
+      payload.alwaysApprove ? "auto" : "default",
+      binding.sessionId,
+    );
+    return { ok: true, settings: binding.client.settings };
+  });
 
   ipcMain.handle(
     "agent:set-mode",
@@ -639,23 +785,45 @@ function registerIpc(): void {
 
   ipcMain.handle(
     "agent:prompt",
-    async (e, payload: { threadId: string; text: string; sessionId?: string }) => {
+    async (
+      e,
+      payload: {
+        threadId: string;
+        text: string;
+        sessionId?: string;
+        attachments?: PromptAttachment[];
+      },
+    ) => {
       const binding = bindings.get(payload.threadId);
       if (!binding) throw new Error("Agent not started for thread");
       const sid = payload.sessionId || binding.sessionId;
       if (!sid) throw new Error("No session");
       // Fire and wait for prompt RPC to complete (streams arrive via events)
-      const result = await binding.client.prompt(payload.text, sid);
+      const prepared = preparePromptAttachments(
+        payload.threadId,
+        payload.attachments || [],
+      );
+      const attachmentContext = prepared.paths.length
+        ? `\n\n<attached_files>\n${prepared.paths.map((p) => `- ${p}`).join("\n")}\n</attached_files>`
+        : "";
+      const result = await binding.client.prompt(
+        payload.text + attachmentContext,
+        sid,
+        prepared.images,
+      );
       return { result, sessionId: sid };
     },
   );
 
   ipcMain.handle(
     "agent:cancel",
-    async (_e, payload: { threadId: string }) => {
+    (_e, payload: { threadId: string; sessionId?: string }) => {
       const binding = bindings.get(payload.threadId);
       if (!binding) return { ok: true };
-      await binding.client.cancel();
+      // Cancellation must never hold the renderer hostage while the prompt RPC
+      // is busy. `cancel()` writes session/cancel immediately; completion is
+      // best-effort because some Grok versions do not answer this RPC quickly.
+      void binding.client.cancel(payload.sessionId || binding.sessionId || undefined);
       return { ok: true };
     },
   );

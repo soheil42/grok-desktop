@@ -113,4 +113,17 @@ describe("buildTimeline", () => {
     ]);
     expect(tl.map((e) => e.type)).toEqual(["item", "item"]);
   });
+
+  it("summarizes mixed consecutive tool activity in chronological order", () => {
+    const tl = buildTimeline([
+      item({ id: "r", kind: "tool_result", title: "Read `App.tsx`", status: "completed" }),
+      item({ id: "x", kind: "tool_result", title: "Execute `npm test`", status: "completed" }),
+      item({ id: "e", kind: "tool_result", title: "Edit `store.ts`", status: "completed" }),
+    ]);
+    expect(tl).toHaveLength(1);
+    expect(tl[0]).toMatchObject({
+      type: "tool_group",
+      label: "Read 1 file, Edited 1 file, Ran 1 command",
+    });
+  });
 });

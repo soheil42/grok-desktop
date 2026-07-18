@@ -9,7 +9,19 @@ import {
 import type { PlanApprovalRequest } from "../shared/plan-approval.js";
 import type { UserQuestionRequest } from "../shared/user-questions.js";
 import { preserveJsonRpcId } from "../shared/types.js";
-import type { PermissionRequest, StreamItem } from "../shared/types.js";
+import type {
+  AgentConfigOption,
+  AgentCommandOption,
+  AgentModelOption,
+  AgentSessionSettings,
+  PermissionRequest,
+  StreamItem,
+} from "../shared/types.js";
+
+export type AcpPromptImage = {
+  data: string;
+  mimeType: string;
+};
 import {
   formatGrokNotFoundError,
   pathWithGrokBin,
@@ -58,12 +70,42 @@ export type AcpClientEvents = {
   error: (err: Error) => void;
   exit: (code: number | null) => void;
   log: (line: string) => void;
+  settings: (settings: AgentSessionSettings) => void;
 };
 
 type Pending = {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
 };
+
+// Keep known first-party models visible when Grok's remote settings refresh is
+// unavailable, but never claim that an unadvertised model is selectable. ACP
+// rejects session/set_model for those entries with "Invalid params".
+const GROK_MODEL_FALLBACKS: AgentModelOption[] = [
+  {
+    id: "grok-composer-2.5-fast",
+    name: "Composer 2.5",
+    description: "Cursor's latest coding model",
+    supportsReasoningEffort: false,
+    available: false,
+  },
+];
+
+function parseReasoningChoices(raw: unknown): AgentConfigOption["choices"] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((choice) => {
+    if (typeof choice === "string") return [{ value: choice, name: choice }];
+    if (!choice || typeof choice !== "object") return [];
+    const row = choice as Record<string, unknown>;
+    const value = String(row.value ?? row.id ?? "");
+    if (!value) return [];
+    return [{
+      value,
+      name: String(row.label ?? row.name ?? value),
+      description: row.description ? String(row.description) : undefined,
+    }];
+  });
+}
 
 /**
  * Thin JSON-RPC client over `grok agent stdio`.
@@ -86,12 +128,25 @@ export class GrokAcpClient extends EventEmitter {
   private alwaysApprove: boolean;
   private stderrBuf = "";
   private authenticated = false;
+  private sessionSettings: AgentSessionSettings = {
+    models: [],
+    configOptions: [],
+    availableCommands: [],
+  };
+  private reasoningEffort?: string;
 
-  constructor(opts: { cwd: string; binary?: string; alwaysApprove?: boolean }) {
+  constructor(opts: {
+    cwd: string;
+    binary?: string;
+    alwaysApprove?: boolean;
+    reasoningEffort?: string;
+  }) {
     super();
     this.cwd = opts.cwd;
     // Packaged apps have a thin PATH — never rely on bare "grok" alone.
     this.binary = opts.binary || resolveGrokBinary();
+    this.reasoningEffort = opts.reasoningEffort;
+    this.sessionSettings.reasoningEffort = opts.reasoningEffort;
     // Env override only — UI Auto mode uses setAlwaysApprove + session/set_mode
     // so leaving Auto does not leave a stuck --always-approve process.
     this.alwaysApprove =
@@ -110,13 +165,164 @@ export class GrokAcpClient extends EventEmitter {
     return this.proc != null && this.proc.exitCode == null;
   }
 
+  get settings(): AgentSessionSettings {
+    return this.sessionSettings;
+  }
+
+  private captureAvailableCommands(raw: unknown): boolean {
+    if (!Array.isArray(raw)) return false;
+    const availableCommands: AgentCommandOption[] = raw.flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const command = entry as Record<string, unknown>;
+      const name = String(command.name ?? "").replace(/^\//, "").trim();
+      if (!name) return [];
+      const input =
+        command.input && typeof command.input === "object"
+          ? (command.input as Record<string, unknown>)
+          : undefined;
+      return [{
+        name,
+        description: String(command.description ?? `Run /${name}`),
+        inputHint: input?.hint ? String(input.hint) : undefined,
+      }];
+    });
+    if (!availableCommands.length) return false;
+    this.sessionSettings = { ...this.sessionSettings, availableCommands };
+    return true;
+  }
+
+  private captureSessionSettings(result: Record<string, unknown>): void {
+    // Grok advertises its authoritative model catalog during `initialize` at
+    // `_meta.modelState`. Session responses from older/newer CLI builds may
+    // instead expose `models`, `modelState`, or the fields at the top level.
+    // Keep all of these shapes so Desktop follows the installed CLI rather
+    // than maintaining a stale, hard-coded model list.
+    const meta =
+      result._meta && typeof result._meta === "object"
+        ? (result._meta as Record<string, unknown>)
+        : undefined;
+    const nestedModelState =
+      meta?.modelState && typeof meta.modelState === "object"
+        ? (meta.modelState as Record<string, unknown>)
+        : undefined;
+    const directModelState =
+      result.modelState && typeof result.modelState === "object"
+        ? (result.modelState as Record<string, unknown>)
+        : undefined;
+    const modelsState =
+      result.models && typeof result.models === "object"
+        ? (result.models as Record<string, unknown>)
+        : undefined;
+    const modelState =
+      nestedModelState ?? directModelState ?? modelsState ?? result;
+    const rawModels =
+      (Array.isArray(modelState.availableModels) && modelState.availableModels) ||
+      (Array.isArray(result.availableModels) && result.availableModels) ||
+      (Array.isArray(result.models) && result.models) ||
+      [];
+    const advertisedModels: AgentModelOption[] = rawModels.flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const model = raw as Record<string, unknown>;
+      const id = String(model.modelId ?? model.id ?? model.value ?? "");
+      if (!id) return [];
+      const modelMeta =
+        model._meta && typeof model._meta === "object"
+          ? (model._meta as Record<string, unknown>)
+          : model;
+      const reasoningEfforts = parseReasoningChoices(modelMeta.reasoningEfforts);
+      return [{
+        id,
+        name: String(model.name ?? model.label ?? id),
+        description: model.description ? String(model.description) : undefined,
+        totalContextTokens:
+          typeof modelMeta.totalContextTokens === "number"
+            ? modelMeta.totalContextTokens
+            : undefined,
+        supportsReasoningEffort:
+          typeof modelMeta.supportsReasoningEffort === "boolean"
+            ? modelMeta.supportsReasoningEffort
+            : reasoningEfforts.length > 0,
+        reasoningEffort:
+          modelMeta.reasoningEffort == null
+            ? undefined
+            : String(modelMeta.reasoningEffort),
+        reasoningEfforts: reasoningEfforts.length ? reasoningEfforts : undefined,
+        available: true,
+      }];
+    });
+    const models = advertisedModels.length
+      ? advertisedModels
+      : [...this.sessionSettings.models];
+    for (const fallback of GROK_MODEL_FALLBACKS) {
+      if (!models.some((model) => model.id === fallback.id)) models.push(fallback);
+    }
+    const currentModelId = String(
+      modelState.currentModelId ?? result.currentModelId ?? this.sessionSettings.currentModelId ?? "",
+    ) || undefined;
+    const selectedModel = models.find((model) => model.id === currentModelId);
+    const rawConfig = Array.isArray(result.configOptions) ? result.configOptions : [];
+    const configOptions: AgentConfigOption[] = rawConfig.flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const option = raw as Record<string, unknown>;
+      const id = String(option.id ?? option.optionId ?? "");
+      if (!id) return [];
+      const rawChoices = Array.isArray(option.options) ? option.options : [];
+      return [{
+        id,
+        name: String(option.name ?? option.label ?? id),
+        currentValue:
+          option.currentValue == null ? undefined : String(option.currentValue),
+        choices: rawChoices.flatMap((choice) => {
+          if (typeof choice === "string") return [{ value: choice, name: choice }];
+          if (!choice || typeof choice !== "object") return [];
+          const row = choice as Record<string, unknown>;
+          const value = String(row.value ?? row.id ?? "");
+          return value
+            ? [{
+                value,
+                name: String(row.name ?? row.label ?? value),
+                description: row.description ? String(row.description) : undefined,
+              }]
+            : [];
+        }),
+      }];
+    });
+    const rawCommands =
+      (Array.isArray(result.availableCommands) && result.availableCommands) ||
+      (Array.isArray(meta?.availableCommands) && meta.availableCommands) ||
+      [];
+    const retainedConfig = configOptions.length
+      ? configOptions
+      : this.sessionSettings.configOptions;
+    this.reasoningEffort = selectedModel?.supportsReasoningEffort
+      ? this.reasoningEffort ?? selectedModel.reasoningEffort
+      : undefined;
+    this.sessionSettings = {
+      currentModelId,
+      models,
+      configOptions: retainedConfig,
+      availableCommands: this.sessionSettings.availableCommands,
+      reasoningEffort: this.reasoningEffort,
+    };
+    this.captureAvailableCommands(rawCommands);
+  }
+
   async start(): Promise<void> {
     if (this.proc) return;
 
-    // Do not pass --always-approve here: it sticks for the process lifetime and
-    // hides permission modals after the user leaves Auto mode. Auto is handled
-    // via setAlwaysApprove + session/set_mode instead.
-    const args = ["agent", "stdio"];
+    // Explicitly override the user's persisted permission mode. A user may have
+    // `permission_mode = "always-approve"` in ~/.grok/config.toml; without this
+    // flag Desktop's Agent mode silently inherits it and never receives ACP
+    // permission requests. Auto is still switched per-session below.
+    const args = [
+      "--permission-mode",
+      "default",
+      "agent",
+      ...(this.reasoningEffort
+        ? ["--reasoning-effort", this.reasoningEffort]
+        : []),
+      "stdio",
+    ];
     // Re-resolve in case CLI was installed after app launch / PATH was thin
     this.binary = resolveGrokBinary();
     this.emit("log", `spawning grok agent: ${this.binary}`);
@@ -339,6 +545,24 @@ export class GrokAcpClient extends EventEmitter {
         userQuestions: parsed.updates.userQuestions,
       });
     }
+    if (parsed.kind === "notification") {
+      const params = (parsed.params ?? {}) as Record<string, unknown>;
+      const update =
+        params.update && typeof params.update === "object"
+          ? (params.update as Record<string, unknown>)
+          : params;
+      if (
+        String(update.sessionUpdate ?? "") === "available_commands_update" &&
+        this.captureAvailableCommands(update.availableCommands)
+      ) {
+        this.emit("settings", this.settings);
+      }
+      const method = parsed.method?.toLowerCase() ?? "";
+      if (method.includes("models/update") || method.includes("settings/update")) {
+        this.captureSessionSettings(params);
+        this.emit("settings", this.settings);
+      }
+    }
   }
 
   private send(msg: Record<string, unknown>): void {
@@ -414,6 +638,7 @@ export class GrokAcpClient extends EventEmitter {
         cancelRewind: true,
       },
     })) as Record<string, unknown>;
+    this.captureSessionSettings(result);
     this.initialized = true;
     this.emit("log", `ACP initialized: ${JSON.stringify(result?.protocolVersion ?? result)}`);
     await this.authenticate();
@@ -437,7 +662,8 @@ export class GrokAcpClient extends EventEmitter {
     const result = (await this.request("session/new", {
       cwd: cwd || this.cwd,
       mcpServers: [],
-    })) as { sessionId?: string };
+    })) as Record<string, unknown> & { sessionId?: string };
+    this.captureSessionSettings(result);
     if (!result?.sessionId) {
       throw new Error("session/new did not return sessionId");
     }
@@ -448,22 +674,34 @@ export class GrokAcpClient extends EventEmitter {
 
   async loadSession(sessionId: string, cwd?: string): Promise<string> {
     if (!this.initialized) await this.start();
-    await this.request("session/load", {
+    const result = (await this.request("session/load", {
       sessionId,
       cwd: cwd || this.cwd,
       mcpServers: [],
-    });
+    })) as Record<string, unknown>;
+    this.captureSessionSettings(result);
     this.sessionId = sessionId;
     if (cwd) this.cwd = cwd;
     return sessionId;
   }
 
-  async prompt(text: string, sessionId?: string): Promise<unknown> {
+  async prompt(
+    text: string,
+    sessionId?: string,
+    images: AcpPromptImage[] = [],
+  ): Promise<unknown> {
     const sid = sessionId || this.sessionId;
     if (!sid) throw new Error("No active session");
     return this.request("session/prompt", {
       sessionId: sid,
-      prompt: [{ type: "text", text }],
+      prompt: [
+        { type: "text", text },
+        ...images.map((image) => ({
+          type: "image",
+          data: image.data,
+          mimeType: image.mimeType,
+        })),
+      ],
     });
   }
 
@@ -477,13 +715,31 @@ export class GrokAcpClient extends EventEmitter {
   ): Promise<void> {
     const sid = sessionId || this.sessionId;
     if (!sid) return;
-    try {
-      await this.request("session/set_mode", { sessionId: sid, modeId });
-      this.emit("log", `session/set_mode → ${modeId}`);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.emit("log", `session/set_mode failed: ${msg}`);
-    }
+    await this.request("session/set_mode", { sessionId: sid, modeId });
+    this.emit("log", `session/set_mode → ${modeId}`);
+  }
+
+  async setSessionModel(modelId: string, sessionId?: string): Promise<void> {
+    const sid = sessionId || this.sessionId;
+    if (!sid) throw new Error("No active session");
+    await this.request("session/set_model", { sessionId: sid, modelId });
+    this.captureSessionSettings({ currentModelId: modelId });
+  }
+
+  async setSessionConfigOption(
+    optionId: string,
+    value: string,
+    sessionId?: string,
+  ): Promise<void> {
+    const sid = sessionId || this.sessionId;
+    if (!sid) throw new Error("No active session");
+    await this.request("session/set_config_option", { sessionId: sid, optionId, value });
+    this.sessionSettings = {
+      ...this.sessionSettings,
+      configOptions: this.sessionSettings.configOptions.map((option) =>
+        option.id === optionId ? { ...option, currentValue: value } : option,
+      ),
+    };
   }
 
   async listRewindPoints(sessionId?: string): Promise<RewindPoint[]> {

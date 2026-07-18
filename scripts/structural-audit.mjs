@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scratch =
   process.env.GROK_SCRATCH ||
-  "/var/folders/c4/yxvvqlsn2sz9pyd2yr9jnsrw0000gn/T/grok-goal-f032dfe1736f/implementer";
+  path.join(os.tmpdir(), "grok-desktop-audit");
 
 const files = {
   projects: "src/renderer/App.tsx",
@@ -42,11 +43,16 @@ const assertions = [
   ["multi-project sidebar", app.includes("projects-sidebar")],
   ["thread list", app.includes("threads-sidebar")],
   ["chat/tool stream", app.includes("stream-view") && fs.existsSync(path.join(root, files.stream))],
-  ["permission surface", app.includes("PermissionModal")],
+  ["permission surface", app.includes("PermissionPrompt")],
   ["diff/tool results", read("src/renderer/components/StreamItemView.tsx").includes("diff-view")],
   ["session resume", store.includes("resumeSession") && store.includes("loadSessionHistory")],
   ["auth CLI reuse", main.includes("detectAuth") && read("src/shared/session-index.ts").includes("auth.json")],
-  ["RTL support", app.includes("dir-toggle") && read("src/shared/rtl.ts").includes("resolveChromeDirection")],
+  [
+    "RTL support",
+    app.includes("detectTextDirection") &&
+      app.includes("shellDocumentAttrs") &&
+      read("src/shared/rtl.ts").includes("detectTextDirection"),
+  ],
   ["production build script", Boolean(pkg.scripts?.dist || pkg.scripts?.build)],
   ["README auth requirements", /SuperGrok|Premium\+|grok login/i.test(readme)],
   ["ACP client path", main.includes("GrokAcpClient") || main.includes("agent:start-session")],

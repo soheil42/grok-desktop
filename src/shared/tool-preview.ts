@@ -6,7 +6,7 @@ import { classifyTool, toolInputMeta } from "./stream-timeline.js";
 import { extractQuestions, looksLikeAskUserQuestion } from "./user-questions.js";
 
 export type ToolPreview =
-  | { kind: "diff"; path: string; oldText: string; newText: string }
+  | { kind: "diff"; path: string; oldText: string; newText: string; result?: string }
   | { kind: "code"; path?: string; language?: string; content: string; label?: string }
   | { kind: "shell"; command: string; output?: string }
   | { kind: "search"; pattern: string; path?: string; output?: string }
@@ -27,6 +27,39 @@ function basename(p: string): string {
 function pickStr(...vals: unknown[]): string | undefined {
   for (const v of vals) {
     if (typeof v === "string" && v.length) return v;
+  }
+  return undefined;
+}
+
+/** Extract Grok ACP's useful human-readable result from nested content blocks. */
+function extractOutputText(value: unknown, depth = 0): string | undefined {
+  if (depth > 6 || value == null) return undefined;
+  if (typeof value === "string") return value.trim() ? value : undefined;
+  if (Array.isArray(value)) {
+    // Avoid rendering raw byte arrays. Grok also sends output_for_prompt beside them.
+    if (value.length && value.every((part) => typeof part === "number")) return undefined;
+    const parts = value
+      .map((part) => extractOutputText(part, depth + 1))
+      .filter((part): part is string => Boolean(part));
+    return parts.length ? parts.join("\n") : undefined;
+  }
+  const row = asRec(value);
+  if (!row) return undefined;
+  for (const key of [
+    "output_for_prompt",
+    "tool_output_for_prompt_concise",
+    "tool_output_for_prompt",
+    "content_concise",
+    "stdout",
+    "stderr",
+    "text",
+    "message",
+    "content",
+    "raw_output",
+    "output",
+  ]) {
+    const result = extractOutputText(row[key], depth + 1);
+    if (result) return result;
   }
   return undefined;
 }
@@ -77,6 +110,7 @@ function trunc(s: string, n: number): string {
 export function buildToolPreview(item: StreamItem): ToolPreview {
   const cls = classifyTool(item);
   const meta = toolInputMeta(item);
+  const resultText = extractOutputText(item.output) || extractOutputText(item.text);
 
   // ask_user_question — list the prompts instead of "No preview"
   if (
@@ -119,6 +153,7 @@ export function buildToolPreview(item: StreamItem): ToolPreview {
         path: d.path,
         oldText: d.oldText || "",
         newText: d.newText || "",
+        result: resultText ? trunc(resultText, 1600) : undefined,
       };
     }
   }
@@ -131,17 +166,14 @@ export function buildToolPreview(item: StreamItem): ToolPreview {
         path: path || meta.path || "file",
         oldText: oldText || "",
         newText: newText || "",
+        result: resultText ? trunc(resultText, 1600) : undefined,
       };
     }
+    if (resultText) return { kind: "text", content: trunc(resultText, 2200) };
   }
 
   if (cls === "read") {
-    const content =
-      typeof item.output === "string"
-        ? item.output
-        : typeof item.text === "string"
-          ? item.text
-          : "";
+    const content = resultText || "";
     // Strip line-number prefixes from grok read output (e.g. "  12→code")
     const cleaned = content
       .split("\n")
@@ -162,12 +194,7 @@ export function buildToolPreview(item: StreamItem): ToolPreview {
       meta.command ||
       item.title?.match(/^Execute\s+`([\s\S]+)`/i)?.[1] ||
       "";
-    const output =
-      typeof item.output === "string"
-        ? item.output
-        : typeof item.text === "string"
-          ? item.text
-          : undefined;
+    const output = resultText;
     if (cmd || output) {
       return {
         kind: "shell",
@@ -179,12 +206,7 @@ export function buildToolPreview(item: StreamItem): ToolPreview {
 
   if (cls === "search" || cls === "web") {
     const pattern = meta.pattern || meta.query || "";
-    const output =
-      typeof item.output === "string"
-        ? item.output
-        : typeof item.text === "string"
-          ? item.text
-          : undefined;
+    const output = resultText;
     return {
       kind: "search",
       pattern: pattern || "…",
@@ -194,17 +216,7 @@ export function buildToolPreview(item: StreamItem): ToolPreview {
   }
 
   // Fallback: avoid dumping huge JSON objects
-  if (typeof item.output === "string" && item.output.trim()) {
-    return { kind: "text", content: trunc(item.output, 2500) };
-  }
-  if (typeof item.text === "string" && item.text.trim()) {
-    return { kind: "text", content: trunc(item.text, 2500) };
-  }
-
-  // Last resort for edits: try nested tool_output_for_prompt
-  const out = asRec(item.output);
-  const promptOut = pickStr(out?.tool_output_for_prompt_concise, out?.tool_output_for_prompt);
-  if (promptOut) return { kind: "text", content: trunc(promptOut, 2000) };
+  if (resultText) return { kind: "text", content: trunc(resultText, 2500) };
 
   return { kind: "empty" };
 }

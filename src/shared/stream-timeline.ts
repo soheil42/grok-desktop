@@ -165,6 +165,19 @@ export function toolClassLabel(cls: ToolClass, count: number): string {
   }
 }
 
+export function toolActivityLabel(items: StreamItem[]): string {
+  const counts = new Map<ToolClass, number>();
+  for (const item of items) {
+    const cls = classifyTool(item);
+    counts.set(cls, (counts.get(cls) || 0) + 1);
+  }
+  const order: ToolClass[] = ["read", "edit", "execute", "search", "web", "todo", "other"];
+  return order
+    .filter((cls) => counts.has(cls))
+    .map((cls) => toolClassLabel(cls, counts.get(cls) || 0))
+    .join(", ");
+}
+
 /** Human chip label — CLI-like, never dump raw JSON/patterns as the only label. */
 export function toolShortLabel(item: StreamItem): string {
   const meta = toolInputMeta(item);
@@ -383,28 +396,29 @@ export function buildTimeline(items: StreamItem[]): TimelineEntry[] {
     }
 
     if (cur.kind === "tool_call" || cur.kind === "tool_result") {
-      const cls = classifyTool(cur);
       const group: StreamItem[] = [cur];
       let j = i + 1;
       while (j < cleaned.length) {
         const n = cleaned[j];
         if (n.kind !== "tool_call" && n.kind !== "tool_result") break;
-        if (classifyTool(n) !== cls) break;
         group.push(n);
         j++;
       }
-      // Group 2+ of same class (including search/web/other batches)
+      // One compact activity line, even when the agent alternates read/search/
+      // execute calls. The expanded list preserves exact chronological order.
       if (group.length >= 2) {
         const groupStatus = group.some((g) => g.status === "failed")
           ? "failed"
           : group.some((g) => g.status === "in_progress")
             ? "in_progress"
-            : "completed";
+            : group.some((g) => g.status === "pending")
+              ? "pending"
+              : "completed";
         timeline.push({
           type: "tool_group",
           id: `tg-${group[0].id}`,
-          toolClass: cls,
-          label: toolClassLabel(cls, group.length),
+          toolClass: classifyTool(cur),
+          label: toolActivityLabel(group),
           items: group,
           status: groupStatus,
         });

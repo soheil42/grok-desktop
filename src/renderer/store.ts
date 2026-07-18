@@ -3,11 +3,15 @@ import { unstable_batchedUpdates } from "react-dom";
 import { v4 as uuid } from "uuid";
 import type {
   AuthStatus,
+  AgentConfigOption,
+  AgentCommandOption,
+  AgentModelOption,
   PermissionRequest,
   ProjectInfo,
   SessionSummary,
   StreamItem,
   TextDirection,
+  PromptAttachment,
 } from "@shared/types";
 import {
   classifyPlanPermission,
@@ -43,6 +47,10 @@ export type Thread = {
   isLoadingHistory: boolean;
   error: string | null;
   modelId: string | null;
+  models: AgentModelOption[];
+  configOptions: AgentConfigOption[];
+  availableCommands: AgentCommandOption[];
+  reasoningEffort: string;
 };
 
 /** Matches Grok CLI Shift+Tab cycle: Agent → Plan → Auto */
@@ -71,6 +79,7 @@ type AppState = {
   projects: ProjectInfo[];
   sessionsByCwd: Record<string, SessionSummary[]>;
   expandedProjects: Record<string, boolean>;
+  hiddenProjects: Record<string, boolean>;
   activeProjectCwd: string | null;
   threads: Thread[];
   activeThreadId: string | null;
@@ -85,18 +94,22 @@ type AppState = {
   refreshProjects: () => Promise<void>;
   selectProject: (cwd: string, opts?: { expand?: boolean }) => Promise<void>;
   toggleProject: (cwd: string) => void;
+  hideProject: (cwd: string) => void;
   openProjectDialog: () => Promise<void>;
   cycleAgentMode: () => void;
   setAgentMode: (m: AgentMode) => void;
   /** Push Agent/Plan/Auto onto the live ACP session (permission mode). */
   syncAgentModeToSession: (mode?: AgentMode) => Promise<void>;
+  setThreadModel: (modelId: string) => Promise<void>;
+  setThreadConfigOption: (optionId: string, value: string) => Promise<void>;
+  setThreadReasoningEffort: (effort: string) => Promise<void>;
   createThread: (cwd?: string, title?: string) => string;
   selectThread: (threadId: string) => void;
   deleteThread: (threadId: string) => Promise<void>;
   deleteSession: (session: SessionSummary) => Promise<void>;
   resumeSession: (session: SessionSummary) => Promise<void>;
   startAgent: (threadId: string) => Promise<void>;
-  sendPrompt: (text: string) => Promise<void>;
+  sendPrompt: (text: string, attachments?: PromptAttachment[]) => Promise<void>;
   cancelPrompt: () => Promise<void>;
   respondPermission: (allow: boolean, optionId?: string) => Promise<void>;
   respondPlan: (decision: PlanApprovalDecision, feedback?: string) => Promise<void>;
@@ -143,6 +156,8 @@ let queuedQuestionAnswers: {
   questions: UserQuestionRequest["questions"];
 } | null = null;
 
+const cancelledPromptThreads = new Set<string>();
+
 function api() {
   if (typeof window !== "undefined" && window.grokDesktop) {
     return window.grokDesktop;
@@ -160,6 +175,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   projects: [],
   sessionsByCwd: {},
   expandedProjects: {},
+  hiddenProjects: (() => {
+    try {
+      return JSON.parse(localStorage.getItem("grok-hidden-projects") || "{}");
+    } catch {
+      return {};
+    }
+  })(),
   activeProjectCwd: null,
   threads: [],
   activeThreadId: null,
@@ -271,6 +293,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       const p = payload as { line: string };
       set((s) => ({ logs: [...s.logs.slice(-200), p.line] }));
     });
+    desktop.on("agent:settings", (payload) => {
+      const p = payload as { threadId: string; settings: import("@shared/types").AgentSessionSettings };
+      set((s) => ({
+        threads: s.threads.map((thread) =>
+          thread.id === p.threadId
+            ? {
+                ...thread,
+                modelId: p.settings.currentModelId || thread.modelId,
+                models: p.settings.models || thread.models,
+                configOptions: p.settings.configOptions || thread.configOptions,
+                availableCommands: p.settings.availableCommands || thread.availableCommands,
+                reasoningEffort: p.settings.reasoningEffort || thread.reasoningEffort,
+              }
+            : thread,
+        ),
+      }));
+    });
     desktop.on("agent:exit", (payload) => {
       const p = payload as { threadId: string; code: number | null };
       set((s) => ({
@@ -339,6 +378,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  hideProject: (cwd: string) => {
+    set((s) => {
+      const hiddenProjects = { ...s.hiddenProjects, [cwd]: true };
+      try {
+        localStorage.setItem("grok-hidden-projects", JSON.stringify(hiddenProjects));
+      } catch {
+        // Storage can be unavailable in hardened renderer contexts.
+      }
+      return {
+        hiddenProjects,
+        activeProjectCwd: s.activeProjectCwd === cwd ? null : s.activeProjectCwd,
+      };
+    });
+  },
+
   openProjectDialog: async () => {
     const desktop = api();
     if (!desktop) return;
@@ -361,10 +415,19 @@ export const useAppStore = create<AppState>((set, get) => ({
           ];
       return {
         projects,
+        hiddenProjects: { ...s.hiddenProjects, [dir]: false },
         activeProjectCwd: dir,
         expandedProjects: { ...s.expandedProjects, [dir]: true },
       };
     });
+    try {
+      localStorage.setItem(
+        "grok-hidden-projects",
+        JSON.stringify(get().hiddenProjects),
+      );
+    } catch {
+      // ignore
+    }
     await get().selectProject(dir);
     get().createThread(dir);
   },
@@ -437,6 +500,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       isLoadingHistory: false,
       error: null,
       modelId: null,
+      models: [],
+      configOptions: [],
+      availableCommands: [],
+      reasoningEffort: "high",
     };
     set((s) => ({
       threads: [thread, ...s.threads],
@@ -546,6 +613,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       isLoadingHistory: true,
       error: null,
       modelId: session.modelId,
+      models: [],
+      configOptions: [],
+      availableCommands: [],
+      reasoningEffort: "high",
     };
     set((s) => ({
       threads: [placeholder, ...s.threads.filter((t) => t.sessionId !== session.id)],
@@ -596,6 +667,21 @@ export const useAppStore = create<AppState>((set, get) => ({
                   isLoadingHistory: false,
                   sessionId:
                     (attach as { sessionId?: string })?.sessionId || t.sessionId,
+                  modelId:
+                    (attach as { settings?: { currentModelId?: string } })?.settings
+                      ?.currentModelId || t.modelId,
+                  models:
+                    (attach as { settings?: { models?: AgentModelOption[] } })?.settings
+                      ?.models || t.models,
+                  configOptions:
+                    (attach as { settings?: { configOptions?: AgentConfigOption[] } })
+                      ?.settings?.configOptions || t.configOptions,
+                  availableCommands:
+                    (attach as { settings?: { availableCommands?: AgentCommandOption[] } })
+                      ?.settings?.availableCommands || t.availableCommands,
+                  reasoningEffort:
+                    (attach as { settings?: { reasoningEffort?: string } })?.settings
+                      ?.reasoningEffort || t.reasoningEffort,
                   error: attachErr || null,
                 }
               : t,
@@ -620,7 +706,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     const desktop = api();
     const thread = get().threads.find((t) => t.id === threadId);
     if (!desktop || !thread) return;
-    const { sessionId } = await desktop.startSession({
+    const { sessionId, settings } = await desktop.startSession({
       threadId,
       cwd: thread.cwd,
       sessionId: thread.sessionId || undefined,
@@ -628,13 +714,169 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     set((s) => ({
       threads: s.threads.map((t) =>
-        t.id === threadId ? { ...t, sessionId, error: null } : t,
+        t.id === threadId
+          ? {
+              ...t,
+              sessionId,
+              error: null,
+              modelId: settings?.currentModelId || t.modelId,
+              models: settings?.models || t.models,
+              configOptions: settings?.configOptions || t.configOptions,
+              availableCommands: settings?.availableCommands || t.availableCommands,
+              reasoningEffort: settings?.reasoningEffort || t.reasoningEffort,
+            }
+          : t,
       ),
       statusLine: "Ready",
     }));
   },
 
-  sendPrompt: async (text) => {
+  setThreadModel: async (modelId) => {
+    const desktop = api();
+    const threadId = get().activeThreadId;
+    if (!desktop || !threadId) return;
+    let thread = get().threads.find((item) => item.id === threadId);
+    if (!thread) return;
+    const previousModelId = thread.modelId;
+    // Selecting a model is local-first; the ACP acknowledgement may take a
+    // moment when Grok refreshes remote settings.
+    set((state) => ({
+      threads: state.threads.map((item) =>
+        item.id === threadId ? { ...item, modelId, error: null } : item,
+      ),
+      statusLine: "Switching model…",
+    }));
+    if (!thread.sessionId) {
+      await get().startAgent(threadId);
+      thread = get().threads.find((item) => item.id === threadId);
+    }
+    try {
+      const response = await desktop.setModel({
+        threadId,
+        sessionId: thread?.sessionId || undefined,
+        modelId,
+      });
+      set((state) => ({
+        threads: state.threads.map((item) =>
+          item.id === threadId
+            ? {
+                ...item,
+                modelId: response.settings?.currentModelId || modelId,
+                models: response.settings?.models || item.models,
+                configOptions: response.settings?.configOptions || item.configOptions,
+                reasoningEffort:
+                  response.settings?.reasoningEffort || item.reasoningEffort,
+                error: null,
+              }
+            : item,
+        ),
+        statusLine: "Ready",
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        threads: state.threads.map((item) =>
+          item.id === threadId
+            ? { ...item, modelId: previousModelId, error: `Model switch failed: ${message}` }
+            : item,
+        ),
+        statusLine: "Model switch failed",
+      }));
+    }
+  },
+
+  setThreadConfigOption: async (optionId, value) => {
+    const desktop = api();
+    const threadId = get().activeThreadId;
+    if (!desktop || !threadId) return;
+    let thread = get().threads.find((item) => item.id === threadId);
+    if (!thread) return;
+    if (!thread.sessionId) {
+      await get().startAgent(threadId);
+      thread = get().threads.find((item) => item.id === threadId);
+    }
+    const response = await desktop.setConfigOption({
+      threadId,
+      sessionId: thread?.sessionId || undefined,
+      optionId,
+      value,
+    });
+    set((state) => ({
+      threads: state.threads.map((item) =>
+        item.id === threadId
+          ? {
+              ...item,
+              configOptions:
+                response.settings?.configOptions ||
+                item.configOptions.map((option) =>
+                  option.id === optionId ? { ...option, currentValue: value } : option,
+                ),
+            }
+          : item,
+      ),
+    }));
+  },
+
+  setThreadReasoningEffort: async (effort) => {
+    const desktop = api();
+    const threadId = get().activeThreadId;
+    if (!desktop || !threadId) return;
+    let thread = get().threads.find((item) => item.id === threadId);
+    if (!thread) return;
+    const selectedModelId = thread.modelId;
+    const selectedModel = thread.models.find((model) => model.id === selectedModelId);
+    const supportedEfforts = selectedModel?.reasoningEfforts?.map((choice) => choice.value) || [];
+    if (!selectedModel?.supportsReasoningEffort || !supportedEfforts.includes(effort)) {
+      set({ statusLine: `${selectedModel?.name || "This model"} does not support ${effort} effort` });
+      return;
+    }
+    const previousEffort = thread.reasoningEffort;
+    set((state) => ({
+      threads: state.threads.map((item) =>
+        item.id === threadId ? { ...item, reasoningEffort: effort, error: null } : item,
+      ),
+      statusLine: `Applying ${effort} effort…`,
+    }));
+    if (!thread.sessionId) {
+      await get().startAgent(threadId);
+      thread = get().threads.find((item) => item.id === threadId);
+    }
+    try {
+      const response = await desktop.setReasoningEffort({
+        threadId,
+        sessionId: thread?.sessionId || undefined,
+        effort,
+        alwaysApprove: get().agentMode === "auto",
+      });
+      set((state) => ({
+        threads: state.threads.map((item) =>
+          item.id === threadId
+            ? {
+                ...item,
+                reasoningEffort: response.settings?.reasoningEffort || effort,
+                modelId: response.settings?.currentModelId || item.modelId,
+                models: response.settings?.models || item.models,
+                configOptions: response.settings?.configOptions || item.configOptions,
+                error: null,
+              }
+            : item,
+        ),
+        statusLine: `Reasoning effort · ${effort}`,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      set((state) => ({
+        threads: state.threads.map((item) =>
+          item.id === threadId
+            ? { ...item, reasoningEffort: previousEffort, error: `Effort change failed: ${message}` }
+            : item,
+        ),
+        statusLine: "Effort change failed",
+      }));
+    }
+  },
+
+  sendPrompt: async (text, attachments = []) => {
     const desktop = api();
     let threadId = get().activeThreadId;
     if (!threadId) {
@@ -642,6 +884,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     let thread = get().threads.find((t) => t.id === threadId);
     if (!thread) return;
+    cancelledPromptThreads.delete(threadId);
 
     const mode = get().agentMode;
     // Plan mode: steer the agent like CLI plan mode without rewriting the agent.
@@ -655,6 +898,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       kind: "user",
       timestamp: Date.now(),
       text,
+      images: attachments
+        .filter((a) => a.mimeType.startsWith("image/"))
+        .map((a, index) => ({ label: a.name, index: index + 1, dataUrl: a.dataUrl })),
+      attachments: attachments
+        .filter((a) => !a.mimeType.startsWith("image/"))
+        .map((a) => ({ name: a.name, mimeType: a.mimeType, size: a.size })),
     };
     set((s) => ({
       threads: s.threads.map((t) =>
@@ -706,16 +955,51 @@ export const useAppStore = create<AppState>((set, get) => ({
         threadId,
         text: outbound,
         sessionId: thread.sessionId || undefined,
+        attachments,
       });
-      // Turn finished — settle any tools still painted as running
+      if (cancelledPromptThreads.delete(threadId)) return;
+      const completedCwd = thread.cwd;
+      const completedSessionId = thread.sessionId;
+
+      // Grok persists a canonical, fully-spaced final message to updates.jsonl.
+      // Live ACP deltas can omit Markdown separators, so reconcile immediately
+      // when the turn completes instead of making the user reopen the app.
+      let canonicalItems: StreamItem[] | null = null;
+      let canonicalPath: string | null = thread.sessionPath;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const sessions = (await desktop.listSessions(completedCwd)) as SessionSummary[];
+        set((s) => ({
+          sessionsByCwd: { ...s.sessionsByCwd, [completedCwd]: sessions },
+        }));
+        const diskSession = sessions.find(
+          (session) => session.id === completedSessionId,
+        );
+        if (diskSession?.path) {
+          const raw = (await desktop.loadSessionHistory(
+            diskSession.path,
+          )) as StreamItem[];
+          const prepared = prepareHistoryItems(raw || [], 180);
+          if (prepared.some((item) => item.kind === "agent_text")) {
+            canonicalItems = prepared;
+            canonicalPath = diskSession.path;
+          }
+        }
+      } catch {
+        // Keep the live stream if disk reconciliation is briefly unavailable.
+      }
+
+      // Turn finished — use canonical history when available and settle tools.
       set((s) => ({
         threads: s.threads.map((t) => {
           if (t.id !== threadId) return t;
+          const items = canonicalItems || t.items;
           return {
             ...t,
             isStreaming: false,
             error: null,
-            items: t.items.map((it) => {
+            sessionPath: canonicalPath || t.sessionPath,
+            items: items.map((it) => {
               if (
                 (it.kind === "tool_call" || it.kind === "tool_result") &&
                 (it.status === "pending" || it.status === "in_progress" || !it.status)
@@ -730,6 +1014,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
       await get().refreshProjects();
     } catch (e) {
+      if (cancelledPromptThreads.delete(threadId)) return;
       const msg = e instanceof Error ? e.message : String(e);
       // Timeout of the prompt RPC often means the turn is still streaming;
       // don't hard-fail the whole thread if we already have output.
@@ -773,14 +1058,36 @@ export const useAppStore = create<AppState>((set, get) => ({
   cancelPrompt: async () => {
     const desktop = api();
     const threadId = get().activeThreadId;
-    if (!desktop || !threadId) return;
-    await desktop.cancel({ threadId });
+    if (!threadId) return;
+    const thread = get().threads.find((t) => t.id === threadId);
+    cancelledPromptThreads.add(threadId);
     set((s) => ({
       threads: s.threads.map((t) =>
-        t.id === threadId ? { ...t, isStreaming: false } : t,
+        t.id === threadId
+          ? {
+              ...t,
+              isStreaming: false,
+              error: null,
+              items: t.items.map((item) =>
+                (item.kind === "tool_call" || item.kind === "tool_result") &&
+                (item.status === "pending" || item.status === "in_progress")
+                  ? { ...item, status: "cancelled" as const }
+                  : item,
+              ),
+            }
+          : t,
       ),
       statusLine: "Cancelled",
     }));
+    if (!desktop) return;
+    try {
+      await desktop.cancel({
+        threadId,
+        sessionId: thread?.sessionId || undefined,
+      });
+    } catch {
+      // UI is already cancelled; transport cancellation is best-effort.
+    }
   },
 
   respondPermission: async (allow, optionId) => {
@@ -1334,6 +1641,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         isLoadingHistory: true,
         error: null,
         modelId: thread.modelId,
+        models: thread.models,
+        configOptions: thread.configOptions,
+        availableCommands: thread.availableCommands,
+        reasoningEffort: thread.reasoningEffort,
       };
       set((s) => ({
         threads: [placeholder, ...s.threads],
