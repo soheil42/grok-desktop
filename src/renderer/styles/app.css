@@ -1996,6 +1996,12 @@ button:disabled {
   background: rgba(255, 107, 107, 0.06);
 }
 
+.msg-bubble.permission {
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-muted);
+}
+
 .typing {
   display: flex;
   align-items: center;

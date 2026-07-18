@@ -462,6 +462,34 @@ export default function App() {
   const send = () => {
     const text = draft.trim();
     if ((!text && attachments.length === 0) || activeThread?.isStreaming) return;
+
+    // "/model <name>" has dedicated client-side plumbing (setThreadModel).
+    // Forwarding it as chat text instead makes Grok CLI reason about a raw
+    // slash command indefinitely rather than switching models, so resolve it
+    // locally and never send it as a prompt.
+    const modelCommand = text.match(/^\/model\s+(\S+)/i);
+    if (modelCommand) {
+      const query = modelCommand[1].toLowerCase().replace(/[^a-z0-9]/g, "");
+      const match = activeThread?.models.find(
+        (model) =>
+          model.id.toLowerCase().replace(/[^a-z0-9]/g, "").includes(query) ||
+          model.name.toLowerCase().replace(/[^a-z0-9]/g, "").includes(query),
+      );
+      if (!match) {
+        setAttachmentError(`No model matches "${modelCommand[1]}"`);
+        return;
+      }
+      if (match.available === false) {
+        setAttachmentError(`${match.name} is not available in this Grok session`);
+        return;
+      }
+      void setThreadModel(match.id);
+      setDraft("");
+      setAttachmentError(null);
+      inputRef.current?.focus();
+      return;
+    }
+
     if (!activeThread && activeProjectCwd) createThread(activeProjectCwd);
     else if (!activeThread) createThread();
     const promptText = text || "Please review the attached file(s).";

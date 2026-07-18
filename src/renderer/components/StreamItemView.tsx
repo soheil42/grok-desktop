@@ -784,10 +784,13 @@ export function StreamItemView({
   }
 
   if (item.kind === "error" || item.kind === "permission") {
+    // A logged permission record is history, not a failure — Auto mode and
+    // approved requests both land here, so only real errors get red styling.
+    const isError = item.kind === "error";
     return (
       <div className={`msg ${anim}`.trim()} data-kind={item.kind}>
-        <div className="msg-bubble error">
-          <strong>{item.kind === "permission" ? "Permission" : "Error"}</strong>
+        <div className={`msg-bubble ${isError ? "error" : "permission"}`}>
+          <strong>{isError ? "Error" : "Permission"}</strong>
           <div>{item.text || item.title}</div>
         </div>
       </div>
